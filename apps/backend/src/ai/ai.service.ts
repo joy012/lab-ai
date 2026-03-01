@@ -281,9 +281,28 @@ Return ONLY valid JSON in this exact format:
   "rawText": "Full extracted text from the report"
 }
 
-Status values: "normal" (within range), "high" (above range), "low" (below range), "critical" (dangerously out of range).
-Use Bangladesh reference ranges where applicable.
-Extract every single test value visible in the report.`;
+CRITICAL RULES — follow exactly:
+
+1. STATUS must be EXACTLY one of these lowercase strings: "normal", "high", "low", "critical".
+   - "normal" = value is within reference range
+   - "high" = value is above the upper limit of reference range
+   - "low" = value is below the lower limit of reference range
+   - "critical" = value is dangerously out of range (e.g., very high glucose, very low hemoglobin)
+   - NEVER use "Normal", "High", "Low", "Critical", "abnormal", or any other value. Always lowercase.
+
+2. REFERENCE RANGE is MANDATORY for every test:
+   - Extract the reference range printed on the report next to each test.
+   - If the report shows a reference range (e.g., "12.0-16.0", "< 200", "3.5-5.5"), use it exactly.
+   - If no reference range is printed on the report, use standard Bangladesh/WHO reference ranges for that test.
+   - NEVER leave referenceRange empty or null. Always provide a range.
+   - Format: "min-max" (e.g., "12.0-16.0"), "< max" (e.g., "< 200"), or "> min" (e.g., "> 1.0").
+
+3. Compare each value against its reference range to determine status accurately.
+   A value of 15.5 with range 12.0-16.0 is "normal". A value of 17.0 with range 12.0-16.0 is "high".
+
+4. Extract EVERY single test value visible in the report — do not skip any.
+
+Use Bangladesh reference ranges where applicable.`;
 
   // OCR extraction — tries multiple Gemini models on quota errors
   async extractLabValues(imagePath: string): Promise<ExtractionResult> {

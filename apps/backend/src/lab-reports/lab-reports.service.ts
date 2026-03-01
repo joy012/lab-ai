@@ -97,6 +97,25 @@ export class LabReportsService {
     return 'Something went wrong while analyzing your report. Please try again.';
   }
 
+  /**
+   * Normalize extracted lab values: lowercase status, trim strings, validate.
+   */
+  private normalizeLabValues(values: LabValue[]): LabValue[] {
+    const validStatuses = new Set(['normal', 'high', 'low', 'critical']);
+    return values.map((v) => {
+      const status = (v.status || 'normal').toString().toLowerCase().trim();
+      return {
+        ...v,
+        test: (v.test || '').trim(),
+        unit: (v.unit || '').trim(),
+        referenceRange: (v.referenceRange || 'N/A').trim(),
+        status: validStatuses.has(status)
+          ? (status as LabValue['status'])
+          : 'normal',
+      };
+    });
+  }
+
   private isPdf(file: Express.Multer.File): boolean {
     return (
       file.mimetype === 'application/pdf' ||
@@ -163,6 +182,9 @@ export class LabReportsService {
         if (extraction.patientName) patientName = extraction.patientName;
       }
 
+      // Normalize status values to lowercase + validate
+      const normalizedValues = this.normalizeLabValues(allValues);
+
       this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
         reportId,
         progress: 55,
@@ -194,7 +216,7 @@ export class LabReportsService {
       const [healthProfile, knowledgeContext, user] = await Promise.all([
         this.prisma.healthProfile.findUnique({ where: { userId } }),
         this.knowledgeService
-          .getContextForLabValues(allValues)
+          .getContextForLabValues(normalizedValues)
           .catch(() => ''),
         this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, email: true } }),
       ]);
@@ -209,7 +231,7 @@ export class LabReportsService {
       let interpretation;
       try {
         interpretation = await this.aiService.interpretResults(
-          allValues,
+          normalizedValues,
           healthProfile || undefined,
           model,
           knowledgeContext,
@@ -221,7 +243,7 @@ export class LabReportsService {
           `Primary model failed for interpretation, trying Groq fallback: ${primaryErr.message}`,
         );
         interpretation = await this.aiService.interpretResults(
-          allValues,
+          normalizedValues,
           healthProfile || undefined,
           'llama-3.3',
           knowledgeContext,
@@ -240,7 +262,7 @@ export class LabReportsService {
         where: { id: reportId },
         data: {
           rawText,
-          values: allValues as any,
+          values: normalizedValues as any,
           summary: interpretation.summary,
           summaryBn: interpretation.summaryBn,
           diagnosis: interpretation.diagnosis || [],
@@ -296,6 +318,11 @@ export class LabReportsService {
   ) {
     const report = await this.findOne(userId, reportId);
 
+    const hasExistingValues =
+      report.values &&
+      Array.isArray(report.values) &&
+      (report.values as any[]).length > 0;
+
     await this.prisma.labReport.update({
       where: { id: reportId },
       data: {
@@ -308,19 +335,172 @@ export class LabReportsService {
         diagnosisStatus: null,
         riskScore: null,
         recommendations: null,
-        values: null,
+        // Keep existing values to avoid OCR non-determinism
+        ...(hasExistingValues ? {} : { values: null }),
       },
     });
 
-    this.reprocessReport(reportId, userId, report.imageUrls, model, personaId).catch(
-      (err) => {
+    if (hasExistingValues) {
+      // Re-interpret only — skip OCR extraction for consistent results
+      this.reinterpretReport(
+        reportId,
+        userId,
+        report.values as unknown as LabValue[],
+        report.rawText || '',
+        report.labName || undefined,
+        report.reportDate?.toISOString() || undefined,
+        model,
+        personaId,
+      ).catch((err) => {
         this.logger.error(
-          `Failed to reprocess report ${reportId}: ${err.message}`,
+          `Failed to reinterpret report ${reportId}: ${err.message}`,
         );
-      },
-    );
+      });
+    } else {
+      // Full re-extraction + interpretation (no existing values)
+      this.reprocessReport(reportId, userId, report.imageUrls, model, personaId).catch(
+        (err) => {
+          this.logger.error(
+            `Failed to reprocess report ${reportId}: ${err.message}`,
+          );
+        },
+      );
+    }
 
     return { message: 'Re-analysis started', reportId };
+  }
+
+  /**
+   * Re-interpret only — reuses existing extracted values to produce consistent scores.
+   */
+  private async reinterpretReport(
+    reportId: string,
+    userId: string,
+    existingValues: LabValue[],
+    rawText: string,
+    labName?: string,
+    reportDate?: string,
+    model?: AIModel,
+    personaId?: string,
+  ) {
+    try {
+      await this.prisma.labReport.update({
+        where: { id: reportId },
+        data: { status: 'PROCESSING' },
+      });
+
+      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+        reportId,
+        progress: 30,
+        message: 'Re-analyzing with same values...',
+      });
+
+      // Normalize status values before re-interpretation
+      const normalizedValues = this.normalizeLabValues(existingValues);
+
+      let personaModifier: string | undefined;
+      if (personaId) {
+        const builtIn = BUILT_IN_PERSONAS.find((p) => p.id === personaId);
+        if (builtIn) {
+          personaModifier = this.aiPersonaService.getPromptModifier(
+            builtIn.style,
+            builtIn.preferences,
+          );
+        } else {
+          const customPersona = await this.prisma.aiPersona.findFirst({
+            where: { id: personaId, userId },
+          });
+          if (customPersona) {
+            personaModifier = this.aiPersonaService.getPromptModifier(
+              customPersona.style,
+              customPersona.preferences as any,
+            );
+          }
+        }
+      }
+
+      const [healthProfile, knowledgeContext, user] = await Promise.all([
+        this.prisma.healthProfile.findUnique({ where: { userId } }),
+        this.knowledgeService
+          .getContextForLabValues(normalizedValues)
+          .catch(() => ''),
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { role: true },
+        }),
+      ]);
+
+      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+        reportId,
+        progress: 65,
+        message: 'Generating recommendations...',
+      });
+
+      let interpretation;
+      try {
+        interpretation = await this.aiService.interpretResults(
+          normalizedValues,
+          healthProfile || undefined,
+          model,
+          knowledgeContext,
+          personaModifier,
+          user?.role,
+        );
+      } catch (primaryErr: any) {
+        this.logger.warn(
+          `Primary model failed for reinterpret, trying Groq fallback: ${primaryErr.message}`,
+        );
+        interpretation = await this.aiService.interpretResults(
+          normalizedValues,
+          healthProfile || undefined,
+          'llama-3.3',
+          knowledgeContext,
+          personaModifier,
+          user?.role,
+        );
+      }
+
+      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+        reportId,
+        progress: 90,
+        message: 'Almost done...',
+      });
+
+      await this.prisma.labReport.update({
+        where: { id: reportId },
+        data: {
+          values: normalizedValues as any,
+          summary: interpretation.summary,
+          summaryBn: interpretation.summaryBn,
+          diagnosis: interpretation.diagnosis || [],
+          diagnosisBn: interpretation.diagnosisBn || [],
+          diagnosisStatus: interpretation.diagnosisStatus || 'all_clear',
+          riskScore: interpretation.riskScore,
+          recommendations: interpretation.recommendations as any,
+          status: 'COMPLETED',
+        },
+      });
+
+      this.realtimeGateway.emitToUser(userId, 'lab-report:completed', {
+        reportId,
+      });
+    } catch (error: any) {
+      this.logger.error(`Report reinterpretation failed: ${error.message}`);
+      const friendlyMessage = this.toFriendlyError(error);
+
+      await this.prisma.labReport.update({
+        where: { id: reportId },
+        data: {
+          status: 'FAILED',
+          errorMessage: friendlyMessage,
+        },
+      });
+
+      this.realtimeGateway.emitToUser(userId, 'lab-report:failed', {
+        reportId,
+        error: friendlyMessage,
+      });
+    }
   }
 
   private async reprocessReport(
@@ -376,6 +556,9 @@ export class LabReportsService {
         if (extraction.patientName) patientName = extraction.patientName;
       }
 
+      // Normalize status values to lowercase + validate
+      const normalizedValues = this.normalizeLabValues(allValues);
+
       this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
         reportId,
         progress: 55,
@@ -406,7 +589,7 @@ export class LabReportsService {
       const [healthProfile, knowledgeContext, user] = await Promise.all([
         this.prisma.healthProfile.findUnique({ where: { userId } }),
         this.knowledgeService
-          .getContextForLabValues(allValues)
+          .getContextForLabValues(normalizedValues)
           .catch(() => ''),
         this.prisma.user.findUnique({ where: { id: userId }, select: { role: true } }),
       ]);
@@ -420,7 +603,7 @@ export class LabReportsService {
       let interpretation;
       try {
         interpretation = await this.aiService.interpretResults(
-          allValues,
+          normalizedValues,
           healthProfile || undefined,
           model,
           knowledgeContext,
@@ -432,7 +615,7 @@ export class LabReportsService {
           `Primary model failed for rerun, trying Groq fallback: ${primaryErr.message}`,
         );
         interpretation = await this.aiService.interpretResults(
-          allValues,
+          normalizedValues,
           healthProfile || undefined,
           'llama-3.3',
           knowledgeContext,
@@ -451,7 +634,7 @@ export class LabReportsService {
         where: { id: reportId },
         data: {
           rawText,
-          values: allValues as any,
+          values: normalizedValues as any,
           summary: interpretation.summary,
           summaryBn: interpretation.summaryBn,
           diagnosis: interpretation.diagnosis || [],

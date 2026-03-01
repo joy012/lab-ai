@@ -245,7 +245,12 @@ export default function ReportDetailScreen() {
     );
   }
 
-  const values: LabValue[] = r.values || [];
+  // Normalize status to lowercase to prevent color mapping issues
+  const values: LabValue[] = (r.values || []).map((v: any) => ({
+    ...v,
+    status: (v.status || "normal").toLowerCase().trim(),
+    referenceRange: v.referenceRange || "N/A",
+  }));
   const recs = r.recommendations as any;
   const diagnosis: string[] = r.diagnosis || [];
   const diagnosisBn: string[] = r.diagnosisBn || [];
