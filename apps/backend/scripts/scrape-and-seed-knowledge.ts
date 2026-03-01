@@ -2,8 +2,8 @@
 /**
  * Medical Knowledge Scraper & Seeder
  *
- * Scrapes medical data from free public APIs, uses Gemini AI to format it
- * into our knowledge schema, generates embeddings, and inserts into MongoDB.
+ * Scrapes medical data from free public APIs, formats using string templates
+ * (no Gemini generation calls), generates embeddings, and inserts into MongoDB.
  *
  * Sources (all free, no auth required):
  *   - MedlinePlus Connect API   → condition/disease info by ICD-10 code
@@ -35,16 +35,9 @@ async function generateEmbedding(text: string): Promise<number[]> {
   return result.embedding.values;
 }
 
-async function callGemini(prompt: string): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-  const result = await model.generateContent(prompt);
-  return result.response.text();
-}
-
-function extractJson(text: string): any {
-  const match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const raw = match ? match[1].trim() : text.trim();
-  return JSON.parse(raw);
+/** Strip HTML tags from MedlinePlus summary text */
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -72,8 +65,8 @@ async function saveEntry(entry: {
     return true;
   } catch (err: any) {
     if (err.message?.includes('429') || err.message?.includes('quota')) {
-      console.log('  ⏳ Rate limited, waiting 15s...');
-      await delay(15000);
+      console.log('  ⏳ Rate limited on embeddings, waiting 30s...');
+      await delay(30000);
       try {
         const embedding = await generateEmbedding(
           `${entry.title} ${entry.content}`,
@@ -141,50 +134,42 @@ async function scrapeMedlinePlus(): Promise<number> {
         continue;
       }
 
-      // Collect summaries from all entries
+      // Collect summaries from all entries (strip HTML)
       const summaries = entries
         .map((e: any) => {
-          const title = e?.title?._value || '';
           const summary = e?.summary?._value || '';
-          return `${title}: ${summary}`;
+          return stripHtml(summary);
         })
         .filter(Boolean)
-        .join('\n\n');
+        .join(' ');
 
       if (!summaries) continue;
 
-      // Use Gemini to format into our schema
-      const prompt = `You are a medical knowledge formatter for a lab report AI app used in Bangladesh.
-
-Given this MedlinePlus data about "${name}" (ICD-10: ${code}), create a knowledge entry.
-
-RAW DATA:
-${summaries.slice(0, 3000)}
-
-Return ONLY valid JSON:
-{
-  "title": "Concise title (e.g., '${name} — Overview and Lab Markers')",
-  "content": "A dense 2-3 paragraph summary covering: what the condition is, key lab tests/imaging used for diagnosis, normal vs abnormal values, treatment overview, and any Bangladesh-specific context (prevalence, local dietary factors, common medications used locally). Write for a medical AI that interprets lab reports.",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
-}`;
-
-      const aiResponse = await callGemini(prompt);
-      const formatted = extractJson(aiResponse);
+      // Format directly — no Gemini call needed
+      const title = `${name} — Overview and Lab Markers (ICD-10: ${code})`;
+      const content = summaries.slice(0, 2000);
+      const tags = [
+        name.toLowerCase(),
+        code.toLowerCase(),
+        'condition',
+        'diagnosis',
+        'lab-markers',
+      ];
 
       const saved = await saveEntry({
         category: 'condition',
-        title: formatted.title,
-        content: formatted.content,
-        tags: formatted.tags || [name.toLowerCase()],
+        title,
+        content,
+        tags,
         source: `medlineplus:${code}`,
       });
 
       if (saved) {
-        console.log(`  ✅ ${formatted.title}`);
+        console.log(`  ✅ ${title}`);
         success++;
       }
 
-      await delay(300); // rate limit: MedlinePlus 85 req/min
+      await delay(300);
     } catch (err: any) {
       console.error(`  ❌ ${name} (${code}): ${err.message}`);
     }
@@ -231,53 +216,40 @@ async function scrapeOpenFDA(): Promise<number> {
       }
 
       // Extract relevant sections
-      const sections = {
-        indications: label.indications_and_usage?.[0]?.slice(0, 500) || '',
-        adverse: label.adverse_reactions?.[0]?.slice(0, 500) || '',
-        interactions: label.drug_interactions?.[0]?.slice(0, 500) || '',
-        labTests: label.laboratory_tests?.[0]?.slice(0, 500) || '',
-        warnings: label.warnings?.[0]?.slice(0, 500) || '',
-        contraindications: label.contraindications?.[0]?.slice(0, 300) || '',
-      };
+      const sections: Record<string, string> = {};
+      if (label.indications_and_usage?.[0]) sections.indications = String(label.indications_and_usage[0]).slice(0, 500);
+      if (label.adverse_reactions?.[0]) sections.adverse = String(label.adverse_reactions[0]).slice(0, 500);
+      if (label.drug_interactions?.[0]) sections.interactions = String(label.drug_interactions[0]).slice(0, 500);
+      if (label.laboratory_tests?.[0]) sections.labTests = String(label.laboratory_tests[0]).slice(0, 500);
+      if (label.warnings?.[0]) sections.warnings = String(label.warnings[0]).slice(0, 500);
+      if (label.contraindications?.[0]) sections.contraindications = String(label.contraindications[0]).slice(0, 300);
 
-      const rawText = Object.entries(sections)
-        .filter(([, v]) => v)
-        .map(([k, v]) => `${k.toUpperCase()}:\n${v}`)
-        .join('\n\n');
+      const contentParts = Object.entries(sections)
+        .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
+        .join(' | ');
 
-      if (!rawText) continue;
+      if (!contentParts) continue;
 
-      const prompt = `You are a medical knowledge formatter for a lab report AI app used in Bangladesh.
-
-Given this FDA label data for "${drug}", create a knowledge entry focused on how this drug affects lab results.
-
-RAW DATA:
-${rawText.slice(0, 3000)}
-
-Return ONLY valid JSON:
-{
-  "title": "${drug.charAt(0).toUpperCase() + drug.slice(1)} — Lab Impact and Interactions",
-  "content": "A dense 2-paragraph summary covering: what lab tests are affected by this drug (e.g., liver enzymes, blood sugar, electrolytes, INR), how to interpret lab values in patients taking this drug, common adverse effects visible on lab reports, and monitoring recommendations. Include Bangladesh context if relevant (e.g., drug availability, common use cases locally).",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
-}`;
-
-      const aiResponse = await callGemini(prompt);
-      const formatted = extractJson(aiResponse);
+      // Format directly — no Gemini call needed
+      const drugName = drug.charAt(0).toUpperCase() + drug.slice(1);
+      const title = `${drugName} — Lab Impact, Interactions, and Monitoring`;
+      const content = contentParts.slice(0, 2000);
+      const tags = [drug, 'drug', 'interaction', 'lab-impact', 'medication'];
 
       const saved = await saveEntry({
         category: 'drug_interaction',
-        title: formatted.title,
-        content: formatted.content,
-        tags: formatted.tags || [drug],
+        title,
+        content,
+        tags,
         source: `openfda:${drug}`,
       });
 
       if (saved) {
-        console.log(`  ✅ ${formatted.title}`);
+        console.log(`  ✅ ${title}`);
         success++;
       }
 
-      await delay(500); // OpenFDA: ~1000 req/day unauthenticated
+      await delay(500);
     } catch (err: any) {
       console.error(`  ❌ ${drug}: ${err.message}`);
     }
@@ -327,53 +299,47 @@ async function scrapeLOINC(): Promise<number> {
       const url = `https://clinicaltables.nlm.nih.gov/api/loinc_items/v3/search?type=question&terms=${encodeURIComponent(testName)}&ef=LONG_COMMON_NAME,SYSTEM,SCALE_TYP,EXAMPLE_UNITS,CLASS&maxList=3`;
       const data = await fetchJson(url);
 
-      const totalResults = data[0] || 0;
-      const extraFields = data[2] || {};
-      const displayStrings = data[3] || [];
+      const totalResults = (data as unknown[])[0] as number || 0;
+      const extraFields = (data as unknown[])[2] as Record<string, string[]> || {};
+      const displayStrings = (data as unknown[])[3] as string[][] || [];
 
       if (totalResults === 0 || displayStrings.length === 0) {
         console.log(`  ⚠️  No LOINC data for ${testName}`);
         continue;
       }
 
-      // Build context from LOINC results
-      const loincInfo = displayStrings
-        .map((d: any[], i: number) => {
+      // Build content from LOINC results — no Gemini call needed
+      const loincDetails = displayStrings
+        .map((d, i) => {
           const longName = extraFields.LONG_COMMON_NAME?.[i] || d[1] || '';
           const system = extraFields.SYSTEM?.[i] || '';
           const units = extraFields.EXAMPLE_UNITS?.[i] || '';
           const cls = extraFields.CLASS?.[i] || '';
-          return `Code: ${d[0]}, Name: ${longName}, System: ${system}, Units: ${units}, Class: ${cls}`;
+          return `${longName} (Code: ${d[0]}, Specimen: ${system}, Units: ${units}, Class: ${cls})`;
         })
-        .join('\n');
+        .join('. ');
 
-      const prompt = `You are a medical knowledge formatter for a lab report AI app used in Bangladesh.
-
-Given this LOINC lab test data for "${testName}", create a knowledge entry about this lab test.
-
-LOINC DATA:
-${loincInfo}
-
-Return ONLY valid JSON:
-{
-  "title": "Concise title about this lab test",
-  "content": "A dense 2-3 paragraph summary covering: what this test measures, normal reference ranges (with units), clinical significance of high and low values, common conditions that cause abnormal results, and Bangladesh-specific context (prevalence of related conditions, local dietary factors, common medications). Include specific numbers and ranges.",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
-}`;
-
-      const aiResponse = await callGemini(prompt);
-      const formatted = extractJson(aiResponse);
+      const testTitle = testName.charAt(0).toUpperCase() + testName.slice(1);
+      const title = `${testTitle} — LOINC Reference and Clinical Significance`;
+      const content = `Lab test reference for ${testName}. ${loincDetails}. This test is commonly ordered in clinical settings for diagnostic evaluation. Abnormal values may indicate underlying pathology requiring further investigation.`;
+      const tags = [
+        testName.toLowerCase().replace(/\s+/g, '-'),
+        'lab-test',
+        'reference-range',
+        'loinc',
+        'diagnosis',
+      ];
 
       const saved = await saveEntry({
         category: 'lab_test',
-        title: formatted.title,
-        content: formatted.content,
-        tags: formatted.tags || [testName],
+        title,
+        content,
+        tags,
         source: `loinc:${testName}`,
       });
 
       if (saved) {
-        console.log(`  ✅ ${formatted.title}`);
+        console.log(`  ✅ ${title}`);
         success++;
       }
 
