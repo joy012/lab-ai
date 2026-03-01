@@ -1,0 +1,28 @@
+{
+  "name": "lab-report-app",
+  "private": true,
+  "scripts": {
+    "prepare": "pnpm run build:libs",
+    "build": "turbo run build",
+    "build:libs": "turbo run build build:gen typecheck --filter=./libs/*",
+    "gen:api-client": "turbo run build:gen --filter=@labai/api-client",
+    "gen:swagger": "pnpm --filter @labai/backend swagger:generate",
+    "dev": "turbo run dev",
+    "dev:mobile": "pnpm --filter @labai/mobile start",
+    "dev:backend": "pnpm --filter @labai/backend start:dev",
+    "dev:web": "pnpm --filter @labai/web dev",
+    "dev:email-playground": "pnpm --filter @labai/email-templates dev",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "check-types": "turbo run check-types"
+  },
+  "devDependencies": {
+    "prettier": "^3.7.4",
+    "turbo": "^2.8.12",
+    "typescript": "5.9.2"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=18"
+  }
+}

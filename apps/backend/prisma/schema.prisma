@@ -1,0 +1,91 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(auto()) @map("_id") @db.ObjectId
+  email             String    @unique
+  passwordHash      String
+  name              String?
+  phone             String?
+  role              String    @default("PATIENT") // PATIENT | DOCTOR | ADMIN
+  emailVerified     Boolean   @default(false)
+  verificationToken String?
+  resetToken        String?
+  resetTokenExpiry  DateTime?
+  refreshToken      String?
+  avatarUrl         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  labReports        LabReport[]
+  healthProfile     HealthProfile?
+}
+
+model LabReport {
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String    @db.ObjectId
+  doctorId        String?   @db.ObjectId
+  title           String?
+  imageUrl        String
+  imageUrls       String[]
+  rawText         String?
+  values          Json?
+  summary         String?
+  summaryBn       String?
+  diagnosis       String[]
+  diagnosisBn     String[]
+  diagnosisStatus String?   // "all_clear" | "mild" | "moderate" | "serious"
+  riskScore       Int?
+  recommendations Json?
+  status          String    @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
+  errorMessage    String?
+  labName         String?
+  reportDate      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id])
+}
+
+model MedicalKnowledge {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  category  String   // e.g., "test_info", "condition", "diet", "medication"
+  title     String
+  content   String
+  tags      String[]
+  source    String?  // e.g., "WHO", "BMDC", "user_feedback"
+  embedding Float[]  // Vector embedding for similarity search
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AiPersona {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  name        String
+  style       String   // "simple" | "detailed" | "diet-focused" | "concern-focused"
+  preferences Json     // { focusAreas, tone, language }
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model HealthProfile {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @unique @db.ObjectId
+  age         Int?
+  gender      String?
+  weight      Float?
+  height      Float?
+  bloodGroup  String?
+  conditions  String[]
+  medications String[]
+  allergies   String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id])
+}

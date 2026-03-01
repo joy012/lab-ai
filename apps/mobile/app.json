@@ -1,0 +1,67 @@
+{
+  "expo": {
+    "name": "LabAI",
+    "slug": "labai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "labai",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.labai.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "LabAI needs camera access to take photos of your lab reports for AI analysis.",
+        "NSPhotoLibraryUsageDescription": "LabAI needs photo library access to select lab report images for AI analysis.",
+        "NSPhotoLibraryAddUsageDescription": "LabAI needs permission to save exported report PDFs to your photo library."
+      }
+    },
+    "android": {
+      "package": "com.labai.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "LabAI needs camera access to take photos of your lab reports for AI analysis."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "LabAI needs photo library access to select lab report images for AI analysis.",
+          "cameraPermission": "LabAI needs camera access to take photos of your lab reports."
+        }
+      ],
+      "expo-font",
+      "expo-web-browser"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

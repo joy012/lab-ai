@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/joy012/Desktop/Development/projects/inboxshop/**)",
+      "Bash(pnpm add @tanstack/react-query zustand @react-native-async-storage/async-storage lucide-react-native axios socket.io-client react-hook-form @hookform/resolvers zod @labai/api-client@workspace:*)",
+      "Bash(pnpm add @tanstack/react-query zustand lucide-react-native axios socket.io-client react-hook-form @hookform/resolvers zod)",
+      "Bash(npx prisma generate)",
+      "Bash(pnpm run build)",
+      "WebFetch(domain:pris.ly)",
+      "Bash(npx prisma --version)",
+      "Bash(ls /Users/joy012/Desktop/Development/projects/lab-report-app/apps/backend/dist/generated/prisma/index*)",
+      "Bash(ls -la /Users/joy012/Desktop/Development/projects/lab-report-app/apps/backend/.env*)",
+      "Bash(npx expo install --fix)",
+      "Bash(pnpm remove dotenv)",
+      "Bash(pnpm add prisma@^6 @prisma/client@^6)",
+      "Bash(pnpm typecheck)",
+      "Bash(pnpm build)",
+      "Bash(wc -l /Users/joy012/Desktop/Development/projects/lab-report-app/apps/backend/src/**/*.ts)",
+      "Bash(cat node_modules/.pnpm/@expo+metro-runtime@55.0.6*/node_modules/@expo/metro-runtime/package.json)",
+      "Bash(pnpm why @expo/metro-runtime)",
+      "Bash(npx expo install @expo/metro-runtime)",
+      "Bash(ipconfig getifaddr en0)",
+      "Bash(ipconfig getifaddr en1)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(pnpm run build:libs)",
+      "Bash(npx nest build)"
+    ]
+  }
+}
