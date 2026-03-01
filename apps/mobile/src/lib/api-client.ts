@@ -96,24 +96,23 @@ const baseAuthRequest = createRequestFn({
 });
 
 // Wrapped request that auto-refreshes expired tokens on 401
-export const globalAuthRequestFunction: RequestFn = async (
-  method,
-  path,
-  options,
+export const globalAuthRequestFunction = (<T>(
+  method: string,
+  path: string,
+  options?: Parameters<RequestFn>[2],
 ) => {
-  const result = await baseAuthRequest(method, path, options);
-
-  if (result.error?.status === 401) {
-    const newToken = await refreshAccessToken();
-    if (newToken) {
-      // Retry the original request (onRequest will pick up the new token)
-      return baseAuthRequest(method, path, options);
+  return baseAuthRequest<T>(method, path, options).then(async (result) => {
+    if (result.error?.status === 401) {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        // Retry the original request (onRequest will pick up the new token)
+        return baseAuthRequest<T>(method, path, options);
+      }
+      // Refresh failed — user is logged out
     }
-    // Refresh failed — user is logged out
-  }
-
-  return result;
-};
+    return result;
+  });
+}) as RequestFn;
 
 // ---------- Controller Instances ----------
 export const authPublicCtrl = createAuthPublicController(publicRequestFunction);
