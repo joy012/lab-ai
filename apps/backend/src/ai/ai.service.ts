@@ -406,8 +406,9 @@ export class AiService {
       medications?: string[];
     },
     userRole?: string,
+    knowledgeContext?: string,
   ): Promise<InterpretationResult> {
-    const prompt = buildECGInterpretationPrompt(ecgFindings, healthProfile, userRole);
+    const prompt = buildECGInterpretationPrompt(ecgFindings, healthProfile, userRole, knowledgeContext);
     const responseText = await this.callModel(prompt, 'gemini-flash');
     return this.extractJson(responseText) as InterpretationResult;
   }
@@ -425,6 +426,7 @@ export class AiService {
       medications?: string[];
     },
     userRole?: string,
+    knowledgeContext?: string,
   ): Promise<InterpretationResult> {
     const prompt = buildImagingInterpretationPrompt(
       imagingFindings,
@@ -432,6 +434,7 @@ export class AiService {
       modality,
       healthProfile,
       userRole,
+      knowledgeContext,
     );
     const responseText = await this.callModel(prompt, 'gemini-flash');
     return this.extractJson(responseText) as InterpretationResult;

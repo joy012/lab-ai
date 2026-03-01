@@ -202,6 +202,7 @@ export function buildImagingInterpretationPrompt(
     medications?: string[];
   } | undefined,
   userRole: string | undefined,
+  knowledgeContext?: string,
 ): string {
   const profileContext = healthProfile
     ? `Patient Profile:
@@ -217,6 +218,13 @@ export function buildImagingInterpretationPrompt(
     : IMAGING_INTERPRETATION_PATIENT;
 
   const modalityContext = isDoctor ? getModalityDoctorContext(modality) : '';
+
+  const knowledgeSection = knowledgeContext
+    ? `\n═══════════════════════════════════════════════════
+RELEVANT MEDICAL KNOWLEDGE (use this for more accurate interpretation)
+═══════════════════════════════════════════════════
+${knowledgeContext}\n`
+    : '';
 
   return `You are a medical AI assistant specializing in diagnostic imaging interpretation for Bangladesh patients.
 
@@ -234,6 +242,7 @@ Extracted Findings:
 ${JSON.stringify(imagingFindings, null, 2)}
 
 ${profileContext}
+${knowledgeSection}
 
 ═══════════════════════════════════════════════════
 RESPONSE FORMAT

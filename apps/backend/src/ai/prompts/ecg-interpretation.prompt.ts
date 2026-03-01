@@ -106,6 +106,7 @@ export function buildECGInterpretationPrompt(
     medications?: string[];
   } | undefined,
   userRole: string | undefined,
+  knowledgeContext?: string,
 ): string {
   const profileContext = healthProfile
     ? `Patient Profile:
@@ -120,6 +121,13 @@ export function buildECGInterpretationPrompt(
       ? ECG_INTERPRETATION_DOCTOR
       : ECG_INTERPRETATION_PATIENT;
 
+  const knowledgeSection = knowledgeContext
+    ? `\n═══════════════════════════════════════════════════
+RELEVANT MEDICAL KNOWLEDGE (use this for more accurate interpretation)
+═══════════════════════════════════════════════════
+${knowledgeContext}\n`
+    : '';
+
   return `You are a medical AI assistant specializing in ECG interpretation for Bangladesh patients.
 
 ${roleInstruction}
@@ -130,6 +138,7 @@ ECG FINDINGS
 ${JSON.stringify(ecgFindings, null, 2)}
 
 ${profileContext}
+${knowledgeSection}
 
 ═══════════════════════════════════════════════════
 RESPONSE FORMAT

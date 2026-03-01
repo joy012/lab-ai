@@ -118,11 +118,140 @@ export class LabReportsService {
   }
 
   /**
-   * Normalize extracted lab values: lowercase status, trim strings, validate.
+   * Known reference ranges for common lab tests.
+   * Used to VERIFY and CORRECT AI-assigned status.
+   */
+  private static readonly LAB_REFERENCE_RANGES: Record<
+    string,
+    { low: number; high: number; critical_low?: number; critical_high?: number; unit: string }
+  > = {
+    // CBC
+    hemoglobin: { low: 12, high: 17.5, critical_low: 7, critical_high: 20, unit: 'g/dL' },
+    hematocrit: { low: 36, high: 54, critical_low: 20, critical_high: 60, unit: '%' },
+    wbc: { low: 4000, high: 11000, critical_low: 2000, critical_high: 30000, unit: '/µL' },
+    'white blood cell': { low: 4, high: 11, critical_low: 2, critical_high: 30, unit: 'x10³/µL' },
+    rbc: { low: 4.2, high: 6.1, critical_low: 2.5, critical_high: 8, unit: 'M/µL' },
+    platelets: { low: 150000, high: 400000, critical_low: 50000, critical_high: 1000000, unit: '/µL' },
+    'platelet count': { low: 150, high: 400, critical_low: 50, critical_high: 1000, unit: 'x10³/µL' },
+    mcv: { low: 80, high: 100, unit: 'fL' },
+    mch: { low: 27, high: 33, unit: 'pg' },
+    mchc: { low: 32, high: 36, unit: 'g/dL' },
+    // Metabolic
+    glucose: { low: 70, high: 100, critical_low: 40, critical_high: 500, unit: 'mg/dL' },
+    'fasting glucose': { low: 70, high: 100, critical_low: 40, critical_high: 500, unit: 'mg/dL' },
+    'random glucose': { low: 70, high: 140, critical_low: 40, critical_high: 500, unit: 'mg/dL' },
+    hba1c: { low: 4, high: 5.6, critical_high: 14, unit: '%' },
+    creatinine: { low: 0.6, high: 1.2, critical_high: 10, unit: 'mg/dL' },
+    bun: { low: 7, high: 20, critical_high: 100, unit: 'mg/dL' },
+    urea: { low: 15, high: 45, critical_high: 200, unit: 'mg/dL' },
+    sodium: { low: 136, high: 145, critical_low: 120, critical_high: 160, unit: 'mEq/L' },
+    potassium: { low: 3.5, high: 5, critical_low: 2.5, critical_high: 6.5, unit: 'mEq/L' },
+    calcium: { low: 8.5, high: 10.5, critical_low: 6, critical_high: 14, unit: 'mg/dL' },
+    chloride: { low: 96, high: 106, unit: 'mEq/L' },
+    bicarbonate: { low: 22, high: 28, critical_low: 10, critical_high: 40, unit: 'mEq/L' },
+    // Liver
+    alt: { low: 7, high: 56, critical_high: 1000, unit: 'U/L' },
+    sgpt: { low: 7, high: 56, critical_high: 1000, unit: 'U/L' },
+    ast: { low: 10, high: 40, critical_high: 1000, unit: 'U/L' },
+    sgot: { low: 10, high: 40, critical_high: 1000, unit: 'U/L' },
+    'alkaline phosphatase': { low: 44, high: 147, unit: 'U/L' },
+    alp: { low: 44, high: 147, unit: 'U/L' },
+    'total bilirubin': { low: 0.1, high: 1.2, critical_high: 15, unit: 'mg/dL' },
+    bilirubin: { low: 0.1, high: 1.2, critical_high: 15, unit: 'mg/dL' },
+    albumin: { low: 3.5, high: 5.5, critical_low: 1.5, unit: 'g/dL' },
+    'total protein': { low: 6, high: 8.3, unit: 'g/dL' },
+    // Lipid
+    'total cholesterol': { low: 0, high: 200, critical_high: 500, unit: 'mg/dL' },
+    cholesterol: { low: 0, high: 200, critical_high: 500, unit: 'mg/dL' },
+    ldl: { low: 0, high: 100, critical_high: 300, unit: 'mg/dL' },
+    hdl: { low: 40, high: 100, unit: 'mg/dL' },
+    triglycerides: { low: 0, high: 150, critical_high: 1000, unit: 'mg/dL' },
+    // Thyroid
+    tsh: { low: 0.4, high: 4, critical_low: 0.01, critical_high: 100, unit: 'mIU/L' },
+    't3': { low: 80, high: 200, unit: 'ng/dL' },
+    't4': { low: 5, high: 12, unit: 'µg/dL' },
+    'free t4': { low: 0.8, high: 1.8, unit: 'ng/dL' },
+    'free t3': { low: 2.3, high: 4.2, unit: 'pg/mL' },
+    // Iron
+    iron: { low: 60, high: 170, unit: 'µg/dL' },
+    ferritin: { low: 12, high: 300, critical_high: 1000, unit: 'ng/mL' },
+    tibc: { low: 250, high: 370, unit: 'µg/dL' },
+    // Coagulation
+    pt: { low: 11, high: 13.5, critical_high: 30, unit: 'seconds' },
+    inr: { low: 0.8, high: 1.1, critical_high: 5, unit: '' },
+    aptt: { low: 25, high: 35, critical_high: 100, unit: 'seconds' },
+    // Kidney
+    'uric acid': { low: 3.5, high: 7.2, critical_high: 15, unit: 'mg/dL' },
+    egfr: { low: 90, high: 200, critical_low: 15, unit: 'mL/min' },
+    // Inflammation
+    esr: { low: 0, high: 20, unit: 'mm/hr' },
+    crp: { low: 0, high: 5, critical_high: 200, unit: 'mg/L' },
+  };
+
+  /**
+   * Match a test name to known reference ranges (fuzzy matching).
+   */
+  private matchLabReference(testName: string): { low: number; high: number; critical_low?: number; critical_high?: number; unit: string } | null {
+    const normalized = testName.toLowerCase().trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[()]/g, '');
+
+    // Exact match
+    if (LabReportsService.LAB_REFERENCE_RANGES[normalized]) {
+      return LabReportsService.LAB_REFERENCE_RANGES[normalized];
+    }
+
+    // Partial match — check if any key is contained in the test name
+    for (const [key, range] of Object.entries(LabReportsService.LAB_REFERENCE_RANGES)) {
+      if (normalized.includes(key) || key.includes(normalized)) {
+        return range;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Validate and correct AI-assigned status against known reference ranges.
+   * This catches the most common AI accuracy issue: wrong status assignment.
+   */
+  private validateLabValueStatus(v: LabValue): LabValue {
+    const numericValue = typeof v.value === 'number' ? v.value : parseFloat(String(v.value));
+    if (isNaN(numericValue)) return v; // Non-numeric values can't be validated
+
+    const ref = this.matchLabReference(v.test);
+    if (!ref) return v; // No reference range found — trust AI
+
+    let correctedStatus: LabValue['status'] = 'normal';
+
+    if (ref.critical_low !== undefined && numericValue < ref.critical_low) {
+      correctedStatus = 'critical';
+    } else if (ref.critical_high !== undefined && numericValue > ref.critical_high) {
+      correctedStatus = 'critical';
+    } else if (numericValue < ref.low) {
+      correctedStatus = 'low';
+    } else if (numericValue > ref.high) {
+      correctedStatus = 'high';
+    }
+
+    if (correctedStatus !== v.status) {
+      this.logger.warn(
+        `Status correction: ${v.test} = ${v.value} → AI said "${v.status}", corrected to "${correctedStatus}" (range: ${ref.low}-${ref.high})`,
+      );
+    }
+
+    return { ...v, status: correctedStatus };
+  }
+
+  /**
+   * Normalize extracted lab values: lowercase status, trim strings, validate
+   * against known reference ranges, and correct AI mistakes.
    */
   private normalizeLabValues(values: LabValue[]): LabValue[] {
     const validStatuses = new Set(['normal', 'high', 'low', 'critical']);
-    return values.map((v) => {
+
+    // Step 1: Basic normalization
+    const normalized = values.map((v) => {
       const status = (v.status || 'normal').toString().toLowerCase().trim();
       return {
         ...v,
@@ -134,6 +263,27 @@ export class LabReportsService {
           : 'normal',
       };
     });
+
+    // Step 2: Validate status against known reference ranges
+    const validated = normalized.map((v) => this.validateLabValueStatus(v));
+
+    // Step 3: Deduplicate (AI sometimes extracts same test twice)
+    const seen = new Map<string, LabValue>();
+    for (const v of validated) {
+      const key = v.test.toLowerCase();
+      const existing = seen.get(key);
+      if (!existing) {
+        seen.set(key, v);
+      } else {
+        // Keep the one with worse status (more conservative)
+        const statusPriority: Record<string, number> = { critical: 0, high: 1, low: 2, normal: 3 };
+        if ((statusPriority[v.status] ?? 3) < (statusPriority[existing.status] ?? 3)) {
+          seen.set(key, v);
+        }
+      }
+    }
+
+    return Array.from(seen.values());
   }
 
   /**
@@ -192,6 +342,80 @@ export class LabReportsService {
     if (abnormalCount >= 3) return 'moderate';
     if (abnormalCount > 0) return 'mild';
     return 'all_clear';
+  }
+
+  /**
+   * Critical keywords in imaging descriptions that should force severity upgrade.
+   * If AI says "normal" or "benign" but the description contains these words,
+   * the finding is upgraded to at least "concerning" or "critical".
+   */
+  private static readonly CRITICAL_IMAGING_KEYWORDS = [
+    'hemorrhage', 'haemorrhage', 'bleeding', 'hematoma', 'haematoma',
+    'infarct', 'ischemi', 'ischaemi', 'stroke',
+    'dissection', 'aneurysm', 'rupture',
+    'mass', 'tumor', 'tumour', 'malignant', 'metastas', 'carcinoma', 'neoplasm',
+    'fracture', 'dislocation',
+    'pneumothorax', 'hemothorax',
+    'obstruction', 'perforation', 'volvulus', 'intussusception',
+    'abscess', 'empyema',
+    'herniation', 'midline shift', 'mass effect',
+    'hydrocephalus', 'edema', 'oedema',
+    'pulmonary embolism', 'thrombosis', 'thrombus',
+    'cord compression', 'cauda equina',
+    'tamponade', 'pericardial effusion',
+  ];
+
+  private static readonly CONCERNING_IMAGING_KEYWORDS = [
+    'stenosis', 'narrowing',
+    'nodule', 'lesion', 'opacity',
+    'effusion', 'collection', 'fluid',
+    'thickening', 'enhancement', 'hyperinten',
+    'dilatation', 'dilated', 'enlarged',
+    'restricted diffusion',
+    'disc herniation', 'protrusion', 'extrusion',
+    'compression', 'impingement',
+    'calcification', 'calcified',
+    'lymphadenopathy',
+    'leukomalacia', 'gliosis',
+    'atrophy',
+  ];
+
+  /**
+   * Validate imaging findings — upgrade severity if description contains
+   * critical/concerning keywords that the AI marked as normal/benign.
+   */
+  private validateImagingFindings(findings: ImagingFinding[]): ImagingFinding[] {
+    return findings.map((f) => {
+      const desc = (f.description || '').toLowerCase();
+      const loc = (f.location || '').toLowerCase();
+      const text = `${desc} ${loc}`;
+
+      // Check for critical keywords
+      if (f.significance === 'normal' || f.significance === 'benign') {
+        const hasCriticalKeyword = LabReportsService.CRITICAL_IMAGING_KEYWORDS
+          .some((kw) => text.includes(kw));
+        if (hasCriticalKeyword) {
+          this.logger.warn(
+            `Imaging severity upgrade: "${f.location}" → "${f.significance}" upgraded to "critical" (keyword match in: ${f.description.substring(0, 60)}...)`,
+          );
+          return { ...f, significance: 'critical' as const };
+        }
+      }
+
+      // Check for concerning keywords
+      if (f.significance === 'normal' || f.significance === 'benign') {
+        const hasConcerningKeyword = LabReportsService.CONCERNING_IMAGING_KEYWORDS
+          .some((kw) => text.includes(kw));
+        if (hasConcerningKeyword) {
+          this.logger.warn(
+            `Imaging severity upgrade: "${f.location}" → "${f.significance}" upgraded to "concerning" (keyword match)`,
+          );
+          return { ...f, significance: 'concerning' as const };
+        }
+      }
+
+      return f;
+    });
   }
 
   /**
@@ -496,8 +720,11 @@ export class LabReportsService {
       message: 'Interpreting ECG findings...',
     });
 
-    const [patientContext, user] = await Promise.all([
+    const [patientContext, knowledgeContext, user] = await Promise.all([
       this.buildPatientContext(reportId, userId),
+      this.knowledgeService
+        .getContextForECGFindings(ecgResult.ecgFindings)
+        .catch(() => ''),
       this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, email: true } }),
     ]);
 
@@ -505,6 +732,7 @@ export class LabReportsService {
       ecgResult.ecgFindings,
       patientContext,
       user?.role,
+      knowledgeContext,
     );
 
     this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
@@ -565,6 +793,9 @@ export class LabReportsService {
     const imageData = await this.getImageData(originalFiles[0], imageUrls[0]);
     const imagingResult = await this.aiService.extractImagingFindings(imageData);
 
+    // Validate and correct AI-assigned significance using keyword rules
+    imagingResult.imagingFindings = this.validateImagingFindings(imagingResult.imagingFindings);
+
     const riskScore = this.computeImagingRiskScore(imagingResult.imagingFindings);
     const diagnosisStatus = this.computeImagingDiagnosisStatus(imagingResult.imagingFindings);
 
@@ -574,8 +805,14 @@ export class LabReportsService {
       message: 'Interpreting imaging findings...',
     });
 
-    const [patientContext, user] = await Promise.all([
+    const [patientContext, knowledgeContext, user] = await Promise.all([
       this.buildPatientContext(reportId, userId),
+      this.knowledgeService
+        .getContextForImagingFindings(
+          imagingResult.imagingFindings,
+          imagingResult.imagingModality,
+        )
+        .catch(() => ''),
       this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, email: true } }),
     ]);
 
@@ -585,6 +822,7 @@ export class LabReportsService {
       imagingResult.imagingModality,
       patientContext,
       user?.role,
+      knowledgeContext,
     );
 
     this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
@@ -736,21 +974,32 @@ export class LabReportsService {
         const ecgFindings = report.ecgFindings as ECGFinding[];
         riskScore = this.computeECGRiskScore(ecgFindings);
         diagnosisStatus = this.computeECGDiagnosisStatus(ecgFindings);
+        const ecgKnowledge = await this.knowledgeService
+          .getContextForECGFindings(ecgFindings)
+          .catch(() => '');
         interpretation = await this.aiService.interpretECGResults(
           ecgFindings,
           patientContext,
           user?.role,
+          ecgKnowledge,
         );
       } else if (reportType === 'IMAGING') {
-        const imagingFindings = report.imagingFindings as ImagingFinding[];
+        const imagingFindings = this.validateImagingFindings(report.imagingFindings as ImagingFinding[]);
         riskScore = this.computeImagingRiskScore(imagingFindings);
         diagnosisStatus = this.computeImagingDiagnosisStatus(imagingFindings);
+        const imagingKnowledge = await this.knowledgeService
+          .getContextForImagingFindings(
+            imagingFindings,
+            report.imagingModality || 'Unknown',
+          )
+          .catch(() => '');
         interpretation = await this.aiService.interpretImagingResults(
           imagingFindings,
           report.impression || '',
           report.imagingModality || 'Unknown',
           patientContext,
           user?.role,
+          imagingKnowledge,
         );
         updateData.impressionBn = interpretation.summaryBn;
       } else {
