@@ -98,6 +98,8 @@ export interface UpdateHealthProfileRequest {
 }
 
 // Lab Report types
+export type ReportType = 'LAB_REPORT' | 'ECG' | 'IMAGING';
+
 export interface LabValue {
   test: string;
   value: number | string;
@@ -106,10 +108,25 @@ export interface LabValue {
   status: "normal" | "high" | "low" | "critical";
 }
 
+export interface ECGFinding {
+  parameter: string;
+  value: string;
+  unit: string;
+  normalRange: string;
+  status: 'normal' | 'abnormal' | 'critical';
+}
+
+export interface ImagingFinding {
+  location: string;
+  description: string;
+  significance: 'normal' | 'benign' | 'concerning' | 'critical';
+}
+
 export interface LabReportResponse {
   id: string;
   userId: string;
   title?: string | null;
+  reportType: ReportType;
   imageUrl: string;
   imageUrls: string[];
   rawText?: string | null;
@@ -125,6 +142,13 @@ export interface LabReportResponse {
     lifestyle: string[];
     followUp: string[];
   } | null;
+  // ECG-specific
+  ecgFindings?: ECGFinding[] | null;
+  // Imaging-specific
+  imagingModality?: string | null;
+  imagingFindings?: ImagingFinding[] | null;
+  impression?: string | null;
+  impressionBn?: string | null;
   status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
   errorMessage?: string | null;
   labName?: string | null;

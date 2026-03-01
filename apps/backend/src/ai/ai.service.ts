@@ -3,6 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import Groq from 'groq-sdk';
 import * as fs from 'fs';
+import {
+  REPORT_DETECTION_PROMPT,
+  LAB_REPORT_EXTRACTION_PROMPT,
+  buildLabReportInterpretationPrompt,
+  ECG_EXTRACTION_PROMPT,
+  buildECGInterpretationPrompt,
+  buildImagingExtractionPrompt,
+  buildImagingInterpretationPrompt,
+} from './prompts/index.js';
 
 export type AIModel =
   | 'gemini-flash'
@@ -19,8 +28,44 @@ export interface LabValue {
   status: 'normal' | 'high' | 'low' | 'critical';
 }
 
+export type ReportType = 'LAB_REPORT' | 'ECG' | 'IMAGING';
+
 export interface ExtractionResult {
   values: LabValue[];
+  labName?: string;
+  reportDate?: string;
+  patientName?: string;
+  rawText: string;
+}
+
+export interface ECGFinding {
+  parameter: string;
+  value: string;
+  unit: string;
+  normalRange: string;
+  status: 'normal' | 'abnormal' | 'critical';
+}
+
+export interface ECGExtractionResult {
+  ecgFindings: ECGFinding[];
+  interpretation: string;
+  labName?: string;
+  reportDate?: string;
+  patientName?: string;
+  rawText: string;
+}
+
+export interface ImagingFinding {
+  location: string;
+  description: string;
+  significance: 'normal' | 'benign' | 'concerning' | 'critical';
+}
+
+export interface ImagingExtractionResult {
+  imagingModality: string;
+  bodyRegion: string;
+  imagingFindings: ImagingFinding[];
+  impression: string;
   labName?: string;
   reportDate?: string;
   patientName?: string;
@@ -262,48 +307,6 @@ export class AiService {
     throw lastError;
   }
 
-  private readonly EXTRACTION_PROMPT = `You are a medical lab report OCR specialist. Extract ALL lab test values from this lab report.
-
-Return ONLY valid JSON in this exact format:
-{
-  "values": [
-    {
-      "test": "Test Name",
-      "value": 12.5,
-      "unit": "g/dL",
-      "referenceRange": "12.0-16.0",
-      "status": "normal"
-    }
-  ],
-  "labName": "Lab name if visible",
-  "reportDate": "YYYY-MM-DD if visible",
-  "patientName": "Patient name if visible",
-  "rawText": "Full extracted text from the report"
-}
-
-CRITICAL RULES — follow exactly:
-
-1. STATUS must be EXACTLY one of these lowercase strings: "normal", "high", "low", "critical".
-   - "normal" = value is within reference range
-   - "high" = value is above the upper limit of reference range
-   - "low" = value is below the lower limit of reference range
-   - "critical" = value is dangerously out of range (e.g., very high glucose, very low hemoglobin)
-   - NEVER use "Normal", "High", "Low", "Critical", "abnormal", or any other value. Always lowercase.
-
-2. REFERENCE RANGE is MANDATORY for every test:
-   - Extract the reference range printed on the report next to each test.
-   - If the report shows a reference range (e.g., "12.0-16.0", "< 200", "3.5-5.5"), use it exactly.
-   - If no reference range is printed on the report, use standard Bangladesh/WHO reference ranges for that test.
-   - NEVER leave referenceRange empty or null. Always provide a range.
-   - Format: "min-max" (e.g., "12.0-16.0"), "< max" (e.g., "< 200"), or "> min" (e.g., "> 1.0").
-
-3. Compare each value against its reference range to determine status accurately.
-   A value of 15.5 with range 12.0-16.0 is "normal". A value of 17.0 with range 12.0-16.0 is "high".
-
-4. Extract EVERY single test value visible in the report — do not skip any.
-
-Use Bangladesh reference ranges where applicable.`;
-
   // OCR extraction — tries multiple Gemini models on quota errors
   async extractLabValues(imagePath: string): Promise<ExtractionResult> {
     if (!this.genAI)
@@ -314,7 +317,7 @@ Use Bangladesh reference ranges where applicable.`;
     const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
 
     const responseText = await this.callGeminiWithFallback(
-      this.EXTRACTION_PROMPT,
+      LAB_REPORT_EXTRACTION_PROMPT,
       { base64, mimeType },
     );
     return this.extractJson(responseText) as ExtractionResult;
@@ -331,7 +334,7 @@ Use Bangladesh reference ranges where applicable.`;
     const contentType = response.headers.get('content-type') || 'image/jpeg';
 
     const responseText = await this.callGeminiWithFallback(
-      this.EXTRACTION_PROMPT,
+      LAB_REPORT_EXTRACTION_PROMPT,
       { base64, mimeType: contentType },
     );
     return this.extractJson(responseText) as ExtractionResult;
@@ -347,10 +350,91 @@ Use Bangladesh reference ranges where applicable.`;
     const base64 = pdfBuffer.toString('base64');
 
     const responseText = await this.callGeminiWithFallback(
-      this.EXTRACTION_PROMPT,
+      LAB_REPORT_EXTRACTION_PROMPT,
       { base64, mimeType: 'application/pdf' },
     );
     return this.extractJson(responseText) as ExtractionResult;
+  }
+
+  // ── Report Type Detection ──
+
+  async detectReportType(
+    imageData: { base64: string; mimeType: string },
+  ): Promise<ReportType> {
+    const responseText = await this.callGeminiWithFallback(
+      REPORT_DETECTION_PROMPT,
+      imageData,
+    );
+    const cleaned = responseText.trim().toUpperCase().replace(/[^A-Z_]/g, '');
+    if (cleaned === 'ECG') return 'ECG';
+    if (cleaned === 'IMAGING') return 'IMAGING';
+    return 'LAB_REPORT';
+  }
+
+  // ── ECG Extraction ──
+
+  async extractECGValues(
+    imageData: { base64: string; mimeType: string },
+  ): Promise<ECGExtractionResult> {
+    const responseText = await this.callGeminiWithFallback(
+      ECG_EXTRACTION_PROMPT,
+      imageData,
+    );
+    return this.extractJson(responseText) as ECGExtractionResult;
+  }
+
+  // ── Imaging Extraction ──
+
+  async extractImagingFindings(
+    imageData: { base64: string; mimeType: string },
+  ): Promise<ImagingExtractionResult> {
+    const responseText = await this.callGeminiWithFallback(
+      buildImagingExtractionPrompt(),
+      imageData,
+    );
+    return this.extractJson(responseText) as ImagingExtractionResult;
+  }
+
+  // ── ECG Interpretation ──
+
+  async interpretECGResults(
+    ecgFindings: ECGFinding[],
+    healthProfile?: {
+      age?: number | null;
+      gender?: string | null;
+      conditions?: string[];
+      medications?: string[];
+    },
+    userRole?: string,
+  ): Promise<InterpretationResult> {
+    const prompt = buildECGInterpretationPrompt(ecgFindings, healthProfile, userRole);
+    const responseText = await this.callModel(prompt, 'gemini-flash');
+    return this.extractJson(responseText) as InterpretationResult;
+  }
+
+  // ── Imaging Interpretation ──
+
+  async interpretImagingResults(
+    imagingFindings: ImagingFinding[],
+    impression: string,
+    modality: string,
+    healthProfile?: {
+      age?: number | null;
+      gender?: string | null;
+      conditions?: string[];
+      medications?: string[];
+    },
+    userRole?: string,
+  ): Promise<InterpretationResult> {
+    const prompt = buildImagingInterpretationPrompt(
+      imagingFindings,
+      impression,
+      modality,
+      healthProfile,
+      userRole,
+    );
+    const responseText = await this.callModel(prompt, 'gemini-flash');
+    return this.extractJson(responseText) as InterpretationResult;
   }
 
   // Interpretation can use any model
@@ -367,78 +451,12 @@ Use Bangladesh reference ranges where applicable.`;
     _personaModifier?: string,
     userRole?: string,
   ): Promise<InterpretationResult> {
-    const profileContext = healthProfile
-      ? `Patient profile: Age: ${healthProfile.age || 'unknown'}, Gender: ${healthProfile.gender || 'unknown'}, Conditions: ${healthProfile.conditions?.join(', ') || 'none'}, Medications: ${healthProfile.medications?.join(', ') || 'none'}`
-      : 'No patient profile available.';
-
-    const knowledgeSection = knowledgeContext
-      ? `\nRelevant Medical Knowledge (use this for more accurate interpretation):\n${knowledgeContext}\n`
-      : '';
-
-    const roleInstruction =
-      userRole === 'DOCTOR'
-        ? `\nRole: You are a junior doctor assistant helping a senior physician analyze lab reports.
-IMPORTANT — use proper medical terminology and clinical language throughout. Include:
-- Pathophysiology context for each abnormal finding
-- Differential diagnosis considerations
-- Reference clinical guidelines (e.g., WHO, NICE, BMDC) where applicable
-- Actionable clinical suggestions (specific tests, referrals, interventions)
-- Be precise, structured, and thorough — write like a clinical note
-- For each diagnosis, briefly explain the underlying mechanism\n`
-        : `\nRole: You are a friendly health assistant explaining lab results to a patient with no medical background.
-IMPORTANT — use simple, everyday language throughout. Follow these rules:
-- Avoid medical jargon entirely — if you must use a medical term, explain it in parentheses like (this means...)
-- Be reassuring but honest
-- Use relatable analogies to explain what values mean
-- Focus on what the patient can do (diet, lifestyle changes) rather than technical details
-- If something needs attention, explain it gently without causing panic\n`;
-
-    const prompt = `You are a medical AI assistant specializing in lab report interpretation for Bangladesh patients.
-${roleInstruction}
-Lab Results:
-${JSON.stringify(values, null, 2)}
-
-${profileContext}
-${knowledgeSection}
-Provide a comprehensive interpretation. Return ONLY valid JSON in this exact format:
-{
-  "diagnosis": ["Identified condition or disease 1", "Condition 2"],
-  "diagnosisBn": ["বাংলায় রোগ নির্ণয় ১", "রোগ নির্ণয় ২"],
-  "diagnosisStatus": "all_clear",
-  "summary": "2-3 paragraph summary in English explaining what the results mean",
-  "summaryBn": "Same summary in Bengali (বাংলা)",
-  "keyFindings": ["Finding 1", "Finding 2"],
-  "riskScore": 0,
-  "recommendations": {
-    "diet": ["Dietary recommendation 1"],
-    "lifestyle": ["Lifestyle recommendation 1"],
-    "followUp": ["Follow-up test or action 1"]
-  },
-  "criticalValues": ["Critical value description if any, empty array if none"]
-}
-
-CRITICAL RULES — follow exactly for consistent results:
-
-1. DIAGNOSIS — be specific and consistent:
-   - List specific medical conditions identified from the lab values (e.g., "Iron deficiency anemia", NOT "Anemia").
-   - If ALL values are "normal", return EMPTY arrays for diagnosis/diagnosisBn and set diagnosisStatus to "all_clear".
-   - The SAME set of lab values must ALWAYS produce the SAME diagnosis list. Do not vary your answer.
-   - diagnosisBn: Same diagnoses translated to Bengali.
-
-2. DIAGNOSIS STATUS (use the SAME logic every time):
-   - "all_clear" = every value is "normal"
-   - "mild" = only "low" values present (no "high" or "critical")
-   - "moderate" = any "high" values present (no "critical")
-   - "serious" = any "critical" values present
-
-3. RISK SCORE: Set to 0 (the server computes this separately).
-
-4. SUMMARY — be consistent:
-   - For the SAME lab values, write the SAME interpretation. Do not add random variations.
-   - Mention each abnormal value and what it means.
-
-Use Bangladesh-specific dietary context (e.g., local foods like dal, fish, leafy greens).`;
-
+    const prompt = buildLabReportInterpretationPrompt(
+      values,
+      healthProfile,
+      userRole,
+      knowledgeContext,
+    );
     const responseText = await this.callModel(prompt, model);
     return this.extractJson(responseText) as InterpretationResult;
   }

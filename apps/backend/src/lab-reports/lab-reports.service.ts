@@ -9,6 +9,11 @@ import { QueryLabReportsDto } from './dto/query-lab-reports.dto.js';
 import type {
   LabValue,
   ExtractionResult,
+  ReportType,
+  ECGFinding,
+  ECGExtractionResult,
+  ImagingFinding,
+  ImagingExtractionResult,
 } from '../ai/ai.service.js';
 
 @Injectable()
@@ -28,6 +33,12 @@ export class LabReportsService {
     userId: string,
     files: Express.Multer.File[],
     title?: string,
+    reportType?: string,
+    patientContext?: {
+      patientAge?: number;
+      patientGender?: string;
+      clinicalHistory?: string;
+    },
   ) {
     const imageUrls: string[] = [];
     for (const file of files) {
@@ -38,10 +49,22 @@ export class LabReportsService {
       imageUrls.push(url);
     }
 
-    const report = await this.prisma.labReport.create({
+    const validType = this.validateReportType(reportType);
+    const defaultTitle =
+      validType === 'ECG'
+        ? `ECG Report - ${new Date().toLocaleDateString()}`
+        : validType === 'IMAGING'
+          ? `Imaging Report - ${new Date().toLocaleDateString()}`
+          : `Lab Report - ${new Date().toLocaleDateString()}`;
+
+    const report = await (this.prisma.labReport as any).create({
       data: {
         userId,
-        title: title || `Lab Report - ${new Date().toLocaleDateString()}`,
+        title: title || defaultTitle,
+        reportType: validType,
+        patientAge: patientContext?.patientAge || null,
+        patientGender: patientContext?.patientGender || null,
+        clinicalHistory: patientContext?.clinicalHistory || null,
         imageUrl: imageUrls[0],
         imageUrls,
         status: 'PENDING',
@@ -53,6 +76,7 @@ export class LabReportsService {
       userId,
       imageUrls,
       files,
+      validType,
     ).catch((err) => {
       this.logger.error(
         `Failed to process report ${report.id}: ${err.message}`,
@@ -60,6 +84,12 @@ export class LabReportsService {
     });
 
     return report;
+  }
+
+  private validateReportType(type?: string): ReportType {
+    if (type === 'ECG') return 'ECG';
+    if (type === 'IMAGING') return 'IMAGING';
+    return 'LAB_REPORT';
   }
 
   private toFriendlyError(error: any): string {
@@ -137,6 +167,62 @@ export class LabReportsService {
     return 'all_clear';
   }
 
+  /**
+   * Compute risk score for ECG findings.
+   * ABNORMAL: +10, CRITICAL: +25. Cap at 100.
+   */
+  private computeECGRiskScore(findings: ECGFinding[]): number {
+    let score = 0;
+    for (const f of findings) {
+      if (f.status === 'critical') score += 25;
+      else if (f.status === 'abnormal') score += 10;
+    }
+    return Math.min(score, 100);
+  }
+
+  /**
+   * Compute diagnosis status for ECG findings.
+   */
+  private computeECGDiagnosisStatus(
+    findings: ECGFinding[],
+  ): 'all_clear' | 'mild' | 'moderate' | 'serious' {
+    const hasCritical = findings.some((f) => f.status === 'critical');
+    const abnormalCount = findings.filter((f) => f.status === 'abnormal').length;
+    if (hasCritical) return 'serious';
+    if (abnormalCount >= 3) return 'moderate';
+    if (abnormalCount > 0) return 'mild';
+    return 'all_clear';
+  }
+
+  /**
+   * Compute risk score for imaging findings.
+   * CONCERNING: +12, CRITICAL: +25. Cap at 100.
+   */
+  private computeImagingRiskScore(findings: ImagingFinding[]): number {
+    let score = 0;
+    for (const f of findings) {
+      if (f.significance === 'critical') score += 25;
+      else if (f.significance === 'concerning') score += 12;
+    }
+    return Math.min(score, 100);
+  }
+
+  /**
+   * Compute diagnosis status for imaging findings.
+   */
+  private computeImagingDiagnosisStatus(
+    findings: ImagingFinding[],
+  ): 'all_clear' | 'mild' | 'moderate' | 'serious' {
+    const hasCritical = findings.some((f) => f.significance === 'critical');
+    const concerningCount = findings.filter(
+      (f) => f.significance === 'concerning',
+    ).length;
+    if (hasCritical) return 'serious';
+    if (concerningCount >= 3) return 'moderate';
+    if (concerningCount > 0) return 'mild';
+    return 'all_clear';
+  }
+
   private isPdf(file: Express.Multer.File): boolean {
     return (
       file.mimetype === 'application/pdf' ||
@@ -144,11 +230,78 @@ export class LabReportsService {
     );
   }
 
+  /**
+   * Get image data (base64 + mimeType) from a file or URL.
+   */
+  private async getImageData(
+    file: Express.Multer.File | undefined,
+    url: string,
+  ): Promise<{ base64: string; mimeType: string }> {
+    if (file) {
+      const base64 = file.buffer.toString('base64');
+      const mimeType = file.mimetype || 'image/jpeg';
+      return { base64, mimeType };
+    }
+    if (url.startsWith('http')) {
+      const response = await fetch(url);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const mimeType = response.headers.get('content-type') || 'image/jpeg';
+      return { base64: buffer.toString('base64'), mimeType };
+    }
+    const fs = await import('fs');
+    const filePath = this.uploadService.getFilePath(url);
+    const buffer = fs.readFileSync(filePath);
+    const mimeType = url.endsWith('.png') ? 'image/png' : 'image/jpeg';
+    return { base64: buffer.toString('base64'), mimeType };
+  }
+
+  /**
+   * Build patient context for AI from per-report fields.
+   * This is used instead of healthProfile for accuracy — doctors upload reports for different patients.
+   */
+  private async buildPatientContext(reportId: string, userId: string): Promise<{
+    age?: number | null;
+    gender?: string | null;
+    conditions?: string[];
+    medications?: string[];
+    clinicalHistory?: string | null;
+  }> {
+    const report = await this.prisma.labReport.findUnique({
+      where: { id: reportId },
+    }) as any;
+    if (!report) return {};
+
+    // Use per-report patient context first, fallback to health profile
+    if (report.patientAge || report.patientGender || report.clinicalHistory) {
+      return {
+        age: report.patientAge,
+        gender: report.patientGender,
+        clinicalHistory: report.clinicalHistory,
+      };
+    }
+
+    // Fallback: use logged-in user's health profile (for patients uploading own reports)
+    const healthProfile = await this.prisma.healthProfile.findUnique({
+      where: { userId },
+    });
+    if (healthProfile) {
+      return {
+        age: healthProfile.age,
+        gender: healthProfile.gender,
+        conditions: healthProfile.conditions || [],
+        medications: healthProfile.medications || [],
+      };
+    }
+
+    return {};
+  }
+
   private async processReport(
     reportId: string,
     userId: string,
     imageUrls: string[],
     originalFiles: Express.Multer.File[],
+    reportType: ReportType = 'LAB_REPORT',
   ) {
     try {
       await this.prisma.labReport.update({
@@ -162,130 +315,13 @@ export class LabReportsService {
         message: 'Scanning your report...',
       });
 
-      // Extract values from all files
-      const allValues: LabValue[] = [];
-      let rawText = '';
-      let labName: string | undefined;
-      let reportDate: string | undefined;
-      let patientName: string | undefined;
-
-      const totalFiles = imageUrls.length;
-      for (let i = 0; i < totalFiles; i++) {
-        const progressBase = Math.round((i / totalFiles) * 40) + 10;
-        this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
-          reportId,
-          progress: progressBase,
-          message: `Extracting values from file ${i + 1} of ${totalFiles}...`,
-        });
-
-        const file = originalFiles[i];
-        const url = imageUrls[i];
-        const extraction =
-          file && this.isPdf(file)
-            ? await this.aiService.extractLabValuesFromPdf(file.buffer)
-            : url.startsWith('http')
-              ? await this.aiService.extractLabValuesFromUrl(url)
-              : await this.aiService.extractLabValues(
-                  this.uploadService.getFilePath(url),
-                );
-
-        allValues.push(...extraction.values);
-        rawText += (rawText ? '\n---\n' : '') + extraction.rawText;
-        if (extraction.labName) labName = extraction.labName;
-        if (extraction.reportDate) reportDate = extraction.reportDate;
-        if (extraction.patientName) patientName = extraction.patientName;
-      }
-
-      // Normalize status values to lowercase + validate
-      const normalizedValues = this.normalizeLabValues(allValues);
-
-      // Compute risk score & diagnosis status server-side (deterministic)
-      const riskScore = this.computeRiskScore(normalizedValues);
-      const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
-        reportId,
-        progress: 55,
-        message: 'Analyzing results...',
-      });
-
-      const [healthProfile, knowledgeContext, user] = await Promise.all([
-        this.prisma.healthProfile.findUnique({ where: { userId } }),
-        this.knowledgeService
-          .getContextForLabValues(normalizedValues)
-          .catch(() => ''),
-        this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, email: true } }),
-      ]);
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
-        reportId,
-        progress: 65,
-        message: 'Generating recommendations...',
-      });
-
-      // AI generates diagnosis text, summary, recommendations — role-based automatically
-      let interpretation;
-      try {
-        interpretation = await this.aiService.interpretResults(
-          normalizedValues,
-          healthProfile || undefined,
-          'gemini-flash',
-          knowledgeContext,
-          undefined,
-          user?.role,
-        );
-      } catch (primaryErr: any) {
-        this.logger.warn(
-          `Primary model failed for interpretation, trying Groq fallback: ${primaryErr.message}`,
-        );
-        interpretation = await this.aiService.interpretResults(
-          normalizedValues,
-          healthProfile || undefined,
-          'llama-3.3',
-          knowledgeContext,
-          undefined,
-          user?.role,
-        );
-      }
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
-        reportId,
-        progress: 90,
-        message: 'Almost done...',
-      });
-
-      await this.prisma.labReport.update({
-        where: { id: reportId },
-        data: {
-          rawText,
-          values: normalizedValues as any,
-          summary: interpretation.summary,
-          summaryBn: interpretation.summaryBn,
-          diagnosis: interpretation.diagnosis || [],
-          diagnosisBn: interpretation.diagnosisBn || [],
-          diagnosisStatus,
-          riskScore,
-          recommendations: interpretation.recommendations as any,
-          labName,
-          reportDate: reportDate ? new Date(reportDate) : null,
-          status: 'COMPLETED',
-        },
-      });
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:completed', {
-        reportId,
-      });
-
-      if (user) {
-        await this.emailService.sendLabReportReadyEmail(user.email, reportId);
-
-        if (interpretation.criticalValues.length > 0) {
-          await this.emailService.sendCriticalAlertEmail(
-            user.email,
-            reportId,
-            interpretation.criticalValues,
-          );
-        }
+      // Route to type-specific processing
+      if (reportType === 'ECG') {
+        await this.processECGReport(reportId, userId, imageUrls, originalFiles);
+      } else if (reportType === 'IMAGING') {
+        await this.processImagingReport(reportId, userId, imageUrls, originalFiles);
+      } else {
+        await this.processLabReport(reportId, userId, imageUrls, originalFiles);
       }
     } catch (error: any) {
       this.logger.error(`Report processing failed: ${error.message}`);
@@ -306,13 +342,318 @@ export class LabReportsService {
     }
   }
 
-  async rerun(userId: string, reportId: string) {
-    const report = await this.findOne(userId, reportId);
+  // ── Lab Report Processing (existing flow) ──
 
-    const hasExistingValues =
+  private async processLabReport(
+    reportId: string,
+    userId: string,
+    imageUrls: string[],
+    originalFiles: Express.Multer.File[],
+  ) {
+    const allValues: LabValue[] = [];
+    let rawText = '';
+    let labName: string | undefined;
+    let reportDate: string | undefined;
+
+    const totalFiles = imageUrls.length;
+    for (let i = 0; i < totalFiles; i++) {
+      const progressBase = Math.round((i / totalFiles) * 40) + 10;
+      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+        reportId,
+        progress: progressBase,
+        message: `Extracting values from file ${i + 1} of ${totalFiles}...`,
+      });
+
+      const file = originalFiles[i];
+      const url = imageUrls[i];
+      const extraction =
+        file && this.isPdf(file)
+          ? await this.aiService.extractLabValuesFromPdf(file.buffer)
+          : url.startsWith('http')
+            ? await this.aiService.extractLabValuesFromUrl(url)
+            : await this.aiService.extractLabValues(
+                this.uploadService.getFilePath(url),
+              );
+
+      allValues.push(...extraction.values);
+      rawText += (rawText ? '\n---\n' : '') + extraction.rawText;
+      if (extraction.labName) labName = extraction.labName;
+      if (extraction.reportDate) reportDate = extraction.reportDate;
+    }
+
+    const normalizedValues = this.normalizeLabValues(allValues);
+    const riskScore = this.computeRiskScore(normalizedValues);
+    const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 55,
+      message: 'Analyzing results...',
+    });
+
+    const [patientContext, knowledgeContext, user] = await Promise.all([
+      this.buildPatientContext(reportId, userId),
+      this.knowledgeService
+        .getContextForLabValues(normalizedValues)
+        .catch(() => ''),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, email: true } }),
+    ]);
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 65,
+      message: 'Generating recommendations...',
+    });
+
+    let interpretation;
+    try {
+      interpretation = await this.aiService.interpretResults(
+        normalizedValues,
+        patientContext,
+        'gemini-flash',
+        knowledgeContext,
+        undefined,
+        user?.role,
+      );
+    } catch (primaryErr: any) {
+      this.logger.warn(
+        `Primary model failed for interpretation, trying Groq fallback: ${primaryErr.message}`,
+      );
+      interpretation = await this.aiService.interpretResults(
+        normalizedValues,
+        patientContext,
+        'llama-3.3',
+        knowledgeContext,
+        undefined,
+        user?.role,
+      );
+    }
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 90,
+      message: 'Almost done...',
+    });
+
+    await this.prisma.labReport.update({
+      where: { id: reportId },
+      data: {
+        rawText,
+        values: normalizedValues as any,
+        summary: interpretation.summary,
+        summaryBn: interpretation.summaryBn,
+        diagnosis: interpretation.diagnosis || [],
+        diagnosisBn: interpretation.diagnosisBn || [],
+        diagnosisStatus,
+        riskScore,
+        recommendations: interpretation.recommendations as any,
+        labName,
+        reportDate: reportDate ? new Date(reportDate) : null,
+        status: 'COMPLETED',
+      },
+    });
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:completed', {
+      reportId,
+    });
+
+    if (user) {
+      await this.emailService.sendLabReportReadyEmail(user.email, reportId);
+      if (interpretation.criticalValues.length > 0) {
+        await this.emailService.sendCriticalAlertEmail(
+          user.email,
+          reportId,
+          interpretation.criticalValues,
+        );
+      }
+    }
+  }
+
+  // ── ECG Report Processing ──
+
+  private async processECGReport(
+    reportId: string,
+    userId: string,
+    imageUrls: string[],
+    originalFiles: Express.Multer.File[],
+  ) {
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 10,
+      message: 'Reading ECG report...',
+    });
+
+    // Extract ECG from first file (ECG reports are typically single page)
+    const imageData = await this.getImageData(originalFiles[0], imageUrls[0]);
+    const ecgResult = await this.aiService.extractECGValues(imageData);
+
+    const riskScore = this.computeECGRiskScore(ecgResult.ecgFindings);
+    const diagnosisStatus = this.computeECGDiagnosisStatus(ecgResult.ecgFindings);
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 55,
+      message: 'Interpreting ECG findings...',
+    });
+
+    const [patientContext, user] = await Promise.all([
+      this.buildPatientContext(reportId, userId),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, email: true } }),
+    ]);
+
+    const interpretation = await this.aiService.interpretECGResults(
+      ecgResult.ecgFindings,
+      patientContext,
+      user?.role,
+    );
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 90,
+      message: 'Almost done...',
+    });
+
+    await (this.prisma.labReport as any).update({
+      where: { id: reportId },
+      data: {
+        rawText: ecgResult.rawText,
+        ecgFindings: ecgResult.ecgFindings as any,
+        summary: interpretation.summary,
+        summaryBn: interpretation.summaryBn,
+        diagnosis: interpretation.diagnosis || [],
+        diagnosisBn: interpretation.diagnosisBn || [],
+        diagnosisStatus,
+        riskScore,
+        recommendations: interpretation.recommendations as any,
+        labName: ecgResult.labName,
+        reportDate: ecgResult.reportDate ? new Date(ecgResult.reportDate) : null,
+        status: 'COMPLETED',
+      },
+    });
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:completed', {
+      reportId,
+    });
+
+    if (user) {
+      await this.emailService.sendLabReportReadyEmail(user.email, reportId);
+      if (interpretation.criticalValues.length > 0) {
+        await this.emailService.sendCriticalAlertEmail(
+          user.email,
+          reportId,
+          interpretation.criticalValues,
+        );
+      }
+    }
+  }
+
+  // ── Imaging Report Processing ──
+
+  private async processImagingReport(
+    reportId: string,
+    userId: string,
+    imageUrls: string[],
+    originalFiles: Express.Multer.File[],
+  ) {
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 10,
+      message: 'Reading imaging report...',
+    });
+
+    // Extract findings from first file
+    const imageData = await this.getImageData(originalFiles[0], imageUrls[0]);
+    const imagingResult = await this.aiService.extractImagingFindings(imageData);
+
+    const riskScore = this.computeImagingRiskScore(imagingResult.imagingFindings);
+    const diagnosisStatus = this.computeImagingDiagnosisStatus(imagingResult.imagingFindings);
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 55,
+      message: 'Interpreting imaging findings...',
+    });
+
+    const [patientContext, user] = await Promise.all([
+      this.buildPatientContext(reportId, userId),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, email: true } }),
+    ]);
+
+    const interpretation = await this.aiService.interpretImagingResults(
+      imagingResult.imagingFindings,
+      imagingResult.impression,
+      imagingResult.imagingModality,
+      patientContext,
+      user?.role,
+    );
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+      reportId,
+      progress: 90,
+      message: 'Almost done...',
+    });
+
+    await (this.prisma.labReport as any).update({
+      where: { id: reportId },
+      data: {
+        rawText: imagingResult.rawText,
+        imagingModality: imagingResult.imagingModality,
+        imagingFindings: imagingResult.imagingFindings as any,
+        impression: imagingResult.impression,
+        impressionBn: interpretation.summaryBn,
+        summary: interpretation.summary,
+        summaryBn: interpretation.summaryBn,
+        diagnosis: interpretation.diagnosis || [],
+        diagnosisBn: interpretation.diagnosisBn || [],
+        diagnosisStatus,
+        riskScore,
+        recommendations: interpretation.recommendations as any,
+        labName: imagingResult.labName,
+        reportDate: imagingResult.reportDate ? new Date(imagingResult.reportDate) : null,
+        status: 'COMPLETED',
+      },
+    });
+
+    this.realtimeGateway.emitToUser(userId, 'lab-report:completed', {
+      reportId,
+    });
+
+    if (user) {
+      await this.emailService.sendLabReportReadyEmail(user.email, reportId);
+      if (interpretation.criticalValues.length > 0) {
+        await this.emailService.sendCriticalAlertEmail(
+          user.email,
+          reportId,
+          interpretation.criticalValues,
+        );
+      }
+    }
+  }
+
+  async rerun(userId: string, reportId: string) {
+    const report = await this.findOne(userId, reportId) as any;
+    const reportType = (report.reportType || 'LAB_REPORT') as ReportType;
+
+    // Determine if we have existing extracted data to reuse
+    const hasExistingLabValues =
+      reportType === 'LAB_REPORT' &&
       report.values &&
       Array.isArray(report.values) &&
       (report.values as any[]).length > 0;
+
+    const hasExistingECG =
+      reportType === 'ECG' &&
+      report.ecgFindings &&
+      Array.isArray(report.ecgFindings) &&
+      (report.ecgFindings as any[]).length > 0;
+
+    const hasExistingImaging =
+      reportType === 'IMAGING' &&
+      report.imagingFindings &&
+      Array.isArray(report.imagingFindings) &&
+      (report.imagingFindings as any[]).length > 0;
+
+    const hasExistingData = hasExistingLabValues || hasExistingECG || hasExistingImaging;
 
     await this.prisma.labReport.update({
       where: { id: reportId },
@@ -326,25 +667,20 @@ export class LabReportsService {
         diagnosisStatus: null,
         riskScore: null,
         recommendations: null,
-        // Keep existing values to avoid OCR non-determinism
-        ...(hasExistingValues ? {} : { values: null }),
+        ...(hasExistingData ? {} : { values: null, ecgFindings: null, imagingFindings: null }),
       },
     });
 
-    if (hasExistingValues) {
-      // Re-interpret only — skip OCR extraction for consistent results
-      this.reinterpretReport(
-        reportId,
-        userId,
-        report.values as unknown as LabValue[],
-      ).catch((err) => {
-        this.logger.error(
-          `Failed to reinterpret report ${reportId}: ${err.message}`,
-        );
-      });
+    if (hasExistingData) {
+      this.reinterpretReport(reportId, userId, report, reportType).catch(
+        (err) => {
+          this.logger.error(
+            `Failed to reinterpret report ${reportId}: ${err.message}`,
+          );
+        },
+      );
     } else {
-      // Full re-extraction + interpretation (no existing values)
-      this.reprocessReport(reportId, userId, report.imageUrls).catch(
+      this.reprocessReport(reportId, userId, report.imageUrls, reportType).catch(
         (err) => {
           this.logger.error(
             `Failed to reprocess report ${reportId}: ${err.message}`,
@@ -362,7 +698,8 @@ export class LabReportsService {
   private async reinterpretReport(
     reportId: string,
     userId: string,
-    existingValues: LabValue[],
+    report: any,
+    reportType: ReportType,
   ) {
     try {
       await this.prisma.labReport.update({
@@ -373,18 +710,11 @@ export class LabReportsService {
       this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
         reportId,
         progress: 30,
-        message: 'Re-analyzing with same values...',
+        message: 'Re-analyzing with existing data...',
       });
 
-      const normalizedValues = this.normalizeLabValues(existingValues);
-      const riskScore = this.computeRiskScore(normalizedValues);
-      const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
-
-      const [healthProfile, knowledgeContext, user] = await Promise.all([
-        this.prisma.healthProfile.findUnique({ where: { userId } }),
-        this.knowledgeService
-          .getContextForLabValues(normalizedValues)
-          .catch(() => ''),
+      const [patientContext, user] = await Promise.all([
+        this.buildPatientContext(reportId, userId),
         this.prisma.user.findUnique({
           where: { id: userId },
           select: { role: true },
@@ -398,27 +728,65 @@ export class LabReportsService {
       });
 
       let interpretation;
-      try {
-        interpretation = await this.aiService.interpretResults(
-          normalizedValues,
-          healthProfile || undefined,
-          'gemini-flash',
-          knowledgeContext,
-          undefined,
+      let riskScore: number;
+      let diagnosisStatus: string;
+      const updateData: any = {};
+
+      if (reportType === 'ECG') {
+        const ecgFindings = report.ecgFindings as ECGFinding[];
+        riskScore = this.computeECGRiskScore(ecgFindings);
+        diagnosisStatus = this.computeECGDiagnosisStatus(ecgFindings);
+        interpretation = await this.aiService.interpretECGResults(
+          ecgFindings,
+          patientContext,
           user?.role,
         );
-      } catch (primaryErr: any) {
-        this.logger.warn(
-          `Primary model failed for reinterpret, trying Groq fallback: ${primaryErr.message}`,
-        );
-        interpretation = await this.aiService.interpretResults(
-          normalizedValues,
-          healthProfile || undefined,
-          'llama-3.3',
-          knowledgeContext,
-          undefined,
+      } else if (reportType === 'IMAGING') {
+        const imagingFindings = report.imagingFindings as ImagingFinding[];
+        riskScore = this.computeImagingRiskScore(imagingFindings);
+        diagnosisStatus = this.computeImagingDiagnosisStatus(imagingFindings);
+        interpretation = await this.aiService.interpretImagingResults(
+          imagingFindings,
+          report.impression || '',
+          report.imagingModality || 'Unknown',
+          patientContext,
           user?.role,
         );
+        updateData.impressionBn = interpretation.summaryBn;
+      } else {
+        // LAB_REPORT
+        const existingValues = report.values as LabValue[];
+        const normalizedValues = this.normalizeLabValues(existingValues);
+        riskScore = this.computeRiskScore(normalizedValues);
+        diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
+
+        const knowledgeContext = await this.knowledgeService
+          .getContextForLabValues(normalizedValues)
+          .catch(() => '');
+
+        try {
+          interpretation = await this.aiService.interpretResults(
+            normalizedValues,
+            patientContext,
+            'gemini-flash',
+            knowledgeContext,
+            undefined,
+            user?.role,
+          );
+        } catch (primaryErr: any) {
+          this.logger.warn(
+            `Primary model failed for reinterpret, trying Groq fallback: ${primaryErr.message}`,
+          );
+          interpretation = await this.aiService.interpretResults(
+            normalizedValues,
+            patientContext,
+            'llama-3.3',
+            knowledgeContext,
+            undefined,
+            user?.role,
+          );
+        }
+        updateData.values = normalizedValues;
       }
 
       this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
@@ -430,7 +798,7 @@ export class LabReportsService {
       await this.prisma.labReport.update({
         where: { id: reportId },
         data: {
-          values: normalizedValues as any,
+          ...updateData,
           summary: interpretation.summary,
           summaryBn: interpretation.summaryBn,
           diagnosis: interpretation.diagnosis || [],
@@ -464,10 +832,15 @@ export class LabReportsService {
     }
   }
 
+  /**
+   * Full re-extraction + interpretation (no existing values).
+   * Routes to type-specific processing.
+   */
   private async reprocessReport(
     reportId: string,
     userId: string,
     imageUrls: string[],
+    reportType: ReportType = 'LAB_REPORT',
   ) {
     try {
       await this.prisma.labReport.update({
@@ -481,110 +854,115 @@ export class LabReportsService {
         message: 'Re-analyzing your report...',
       });
 
-      const allValues: LabValue[] = [];
-      let rawText = '';
-      let labName: string | undefined;
-      let reportDate: string | undefined;
-      let patientName: string | undefined;
+      if (reportType === 'ECG') {
+        await this.processECGReport(reportId, userId, imageUrls, []);
+      } else if (reportType === 'IMAGING') {
+        await this.processImagingReport(reportId, userId, imageUrls, []);
+      } else {
+        // Lab report — re-extract from URLs (no original files available)
+        const allValues: LabValue[] = [];
+        let rawText = '';
+        let labName: string | undefined;
+        let reportDate: string | undefined;
 
-      const totalFiles = imageUrls.length;
-      for (let i = 0; i < totalFiles; i++) {
-        const progressBase = Math.round((i / totalFiles) * 40) + 10;
+        const totalFiles = imageUrls.length;
+        for (let i = 0; i < totalFiles; i++) {
+          const progressBase = Math.round((i / totalFiles) * 40) + 10;
+          this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+            reportId,
+            progress: progressBase,
+            message: `Extracting values from file ${i + 1} of ${totalFiles}...`,
+          });
+
+          const url = imageUrls[i];
+          const extraction = url.startsWith('http')
+            ? await this.aiService.extractLabValuesFromUrl(url)
+            : await this.aiService.extractLabValues(
+                this.uploadService.getFilePath(url),
+              );
+
+          allValues.push(...extraction.values);
+          rawText += (rawText ? '\n---\n' : '') + extraction.rawText;
+          if (extraction.labName) labName = extraction.labName;
+          if (extraction.reportDate) reportDate = extraction.reportDate;
+        }
+
+        const normalizedValues = this.normalizeLabValues(allValues);
+        const riskScore = this.computeRiskScore(normalizedValues);
+        const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
+
         this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
           reportId,
-          progress: progressBase,
-          message: `Extracting values from file ${i + 1} of ${totalFiles}...`,
+          progress: 55,
+          message: 'Analyzing results...',
         });
 
-        const url = imageUrls[i];
-        const extraction = url.startsWith('http')
-          ? await this.aiService.extractLabValuesFromUrl(url)
-          : await this.aiService.extractLabValues(
-              this.uploadService.getFilePath(url),
-            );
+        const [healthProfile, knowledgeContext, user] = await Promise.all([
+          this.prisma.healthProfile.findUnique({ where: { userId } }),
+          this.knowledgeService
+            .getContextForLabValues(normalizedValues)
+            .catch(() => ''),
+          this.prisma.user.findUnique({ where: { id: userId }, select: { role: true } }),
+        ]);
 
-        allValues.push(...extraction.values);
-        rawText += (rawText ? '\n---\n' : '') + extraction.rawText;
-        if (extraction.labName) labName = extraction.labName;
-        if (extraction.reportDate) reportDate = extraction.reportDate;
-        if (extraction.patientName) patientName = extraction.patientName;
+        this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+          reportId,
+          progress: 65,
+          message: 'Generating recommendations...',
+        });
+
+        let interpretation;
+        try {
+          interpretation = await this.aiService.interpretResults(
+            normalizedValues,
+            healthProfile || undefined,
+            'gemini-flash',
+            knowledgeContext,
+            undefined,
+            user?.role,
+          );
+        } catch (primaryErr: any) {
+          this.logger.warn(
+            `Primary model failed for rerun, trying Groq fallback: ${primaryErr.message}`,
+          );
+          interpretation = await this.aiService.interpretResults(
+            normalizedValues,
+            healthProfile || undefined,
+            'llama-3.3',
+            knowledgeContext,
+            undefined,
+            user?.role,
+          );
+        }
+
+        this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
+          reportId,
+          progress: 90,
+          message: 'Almost done...',
+        });
+
+        await this.prisma.labReport.update({
+          where: { id: reportId },
+          data: {
+            rawText,
+            values: normalizedValues as any,
+            summary: interpretation.summary,
+            summaryBn: interpretation.summaryBn,
+            diagnosis: interpretation.diagnosis || [],
+            diagnosisBn: interpretation.diagnosisBn || [],
+            diagnosisStatus,
+            riskScore,
+            recommendations: interpretation.recommendations as any,
+            labName,
+            reportDate: reportDate ? new Date(reportDate) : null,
+            status: 'COMPLETED',
+          },
+        });
+
+        this.realtimeGateway.emitToUser(userId, 'lab-report:completed', {
+          reportId,
+        });
       }
-
-      const normalizedValues = this.normalizeLabValues(allValues);
-      const riskScore = this.computeRiskScore(normalizedValues);
-      const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
-        reportId,
-        progress: 55,
-        message: 'Analyzing results...',
-      });
-
-      const [healthProfile, knowledgeContext, user] = await Promise.all([
-        this.prisma.healthProfile.findUnique({ where: { userId } }),
-        this.knowledgeService
-          .getContextForLabValues(normalizedValues)
-          .catch(() => ''),
-        this.prisma.user.findUnique({ where: { id: userId }, select: { role: true } }),
-      ]);
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
-        reportId,
-        progress: 65,
-        message: 'Generating recommendations...',
-      });
-
-      let interpretation;
-      try {
-        interpretation = await this.aiService.interpretResults(
-          normalizedValues,
-          healthProfile || undefined,
-          'gemini-flash',
-          knowledgeContext,
-          undefined,
-          user?.role,
-        );
-      } catch (primaryErr: any) {
-        this.logger.warn(
-          `Primary model failed for rerun, trying Groq fallback: ${primaryErr.message}`,
-        );
-        interpretation = await this.aiService.interpretResults(
-          normalizedValues,
-          healthProfile || undefined,
-          'llama-3.3',
-          knowledgeContext,
-          undefined,
-          user?.role,
-        );
-      }
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
-        reportId,
-        progress: 90,
-        message: 'Almost done...',
-      });
-
-      await this.prisma.labReport.update({
-        where: { id: reportId },
-        data: {
-          rawText,
-          values: normalizedValues as any,
-          summary: interpretation.summary,
-          summaryBn: interpretation.summaryBn,
-          diagnosis: interpretation.diagnosis || [],
-          diagnosisBn: interpretation.diagnosisBn || [],
-          diagnosisStatus,
-          riskScore,
-          recommendations: interpretation.recommendations as any,
-          labName,
-          reportDate: reportDate ? new Date(reportDate) : null,
-          status: 'COMPLETED',
-        },
-      });
-
-      this.realtimeGateway.emitToUser(userId, 'lab-report:completed', {
-        reportId,
-      });
     } catch (error: any) {
       this.logger.error(`Report reprocessing failed: ${error.message}`);
       const friendlyMessage = this.toFriendlyError(error);

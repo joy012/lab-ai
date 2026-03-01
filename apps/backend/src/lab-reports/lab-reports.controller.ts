@@ -39,11 +39,19 @@ export class LabReportsController {
     @CurrentUser('id') userId: string,
     @UploadedFiles() files: Express.Multer.File[],
     @Body('title') title?: string,
+    @Body('reportType') reportType?: string,
+    @Body('patientAge') patientAge?: string,
+    @Body('patientGender') patientGender?: string,
+    @Body('clinicalHistory') clinicalHistory?: string,
   ) {
     if (!files || files.length === 0) {
       throw new BadRequestException('At least one file is required');
     }
-    return this.labReportsService.create(userId, files, title);
+    return this.labReportsService.create(userId, files, title, reportType, {
+      patientAge: patientAge ? parseInt(patientAge, 10) : undefined,
+      patientGender,
+      clinicalHistory,
+    });
   }
 
   @Get()

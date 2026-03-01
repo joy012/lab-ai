@@ -21,6 +21,9 @@ import {
   Download,
   RotateCcw,
   HeartPulse,
+  ScanLine,
+  MapPin,
+  ShieldAlert,
 } from "lucide-react-native";
 import { labReportsService } from "../../src/services/lab-reports.service";
 import { ReportDetailSkeleton } from "../../src/components/common/ReportDetailSkeleton";
@@ -38,6 +41,20 @@ type LabValue = {
   unit: string;
   referenceRange: string;
   status: "normal" | "high" | "low" | "critical";
+};
+
+type ECGFinding = {
+  parameter: string;
+  value: string;
+  unit: string;
+  normalRange: string;
+  status: "normal" | "abnormal" | "critical";
+};
+
+type ImagingFinding = {
+  location: string;
+  description: string;
+  significance: "normal" | "benign" | "concerning" | "critical";
 };
 
 const STATUS_ORDER: Record<string, number> = {
@@ -245,11 +262,21 @@ export default function ReportDetailScreen() {
     );
   }
 
+  const reportType: string = r.reportType || "LAB_REPORT";
+
   // Normalize status to lowercase to prevent color mapping issues
   const values: LabValue[] = (r.values || []).map((v: any) => ({
     ...v,
     status: (v.status || "normal").toLowerCase().trim(),
     referenceRange: v.referenceRange || "N/A",
+  }));
+  const ecgFindings: ECGFinding[] = (r.ecgFindings || []).map((f: any) => ({
+    ...f,
+    status: (f.status || "normal").toLowerCase().trim(),
+  }));
+  const imagingFindings: ImagingFinding[] = (r.imagingFindings || []).map((f: any) => ({
+    ...f,
+    significance: (f.significance || "normal").toLowerCase().trim(),
   }));
   const recs = r.recommendations as any;
   const diagnosis: string[] = r.diagnosis || [];
@@ -261,12 +288,10 @@ export default function ReportDetailScreen() {
     (a, b) => (STATUS_ORDER[a.status] ?? 3) - (STATUS_ORDER[b.status] ?? 3),
   );
   const anomalyCount = values.filter((v) => v.status !== "normal").length;
+  const ecgAbnormalCount = ecgFindings.filter((f) => f.status !== "normal").length;
 
   const reportImages =
     r.imageUrls?.length > 0 ? r.imageUrls : r.imageUrl ? [r.imageUrl] : [];
-
-  const getRiskColor = (score: number) =>
-    score > 70 ? colors.danger : score > 30 ? colors.warning : colors.success;
 
   const getDiagnosisColor = () => {
     if (diagnosisStatus === "serious") return colors.danger;
@@ -304,36 +329,6 @@ export default function ReportDetailScreen() {
     }
   };
 
-  const LanguageToggle = () =>
-    (r.summaryBn || diagnosisBn.length > 0) ? (
-      <TouchableOpacity
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 4,
-          paddingHorizontal: 10,
-          paddingVertical: 4,
-          borderRadius: 8,
-          backgroundColor: colors.primaryLight,
-        }}
-        onPress={() => {
-          haptics.selection();
-          setLanguage(language === "en" ? "bn" : "en");
-        }}
-      >
-        <Globe size={14} color={colors.primary} />
-        <Text
-          style={{
-            fontSize: 12,
-            color: colors.primary,
-            fontWeight: "600",
-          }}
-        >
-          {language === "en" ? "\u09AC\u09BE\u0982\u09B2\u09BE" : "English"}
-        </Text>
-      </TouchableOpacity>
-    ) : null;
-
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.background }}>
       {/* 1. Report Image(s) — tappable for lightbox */}
@@ -369,56 +364,110 @@ export default function ReportDetailScreen() {
         </TouchableOpacity>
       )}
 
-      {/* 2. Risk Score */}
-      {r.riskScore != null && (
+      {/* 1.5 Report Type Badge */}
+      {reportType !== "LAB_REPORT" && (
         <View
           style={{
-            alignItems: "center",
-            padding: 24,
+            flexDirection: "row",
+            justifyContent: "center",
+            paddingTop: 12,
             backgroundColor: colors.surface,
           }}
         >
           <View
             style={{
-              width: 100,
-              height: 100,
-              borderRadius: 50,
-              borderWidth: 4,
-              borderColor: getRiskColor(r.riskScore),
+              flexDirection: "row",
               alignItems: "center",
-              justifyContent: "center",
+              gap: 6,
+              paddingHorizontal: 14,
+              paddingVertical: 6,
+              borderRadius: 20,
+              backgroundColor:
+                reportType === "ECG" ? "#F3E8FF" : "#E0F2FE",
             }}
           >
+            {reportType === "ECG" ? (
+              <HeartPulse size={14} color="#9333EA" />
+            ) : (
+              <ScanLine size={14} color="#0284C7" />
+            )}
             <Text
               style={{
-                fontSize: 32,
-                fontWeight: "800",
-                color: getRiskColor(r.riskScore),
+                fontSize: 12,
+                fontWeight: "700",
+                color: reportType === "ECG" ? "#9333EA" : "#0284C7",
               }}
             >
-              {r.riskScore}
-            </Text>
-            <Text
-              style={{
-                fontSize: 10,
-                color: colors.textTertiary,
-                fontWeight: "600",
-              }}
-            >
-              Risk Score
+              {reportType === "ECG" ? "ECG Report" : "Imaging Report"}
             </Text>
           </View>
-          <Text
-            style={{ fontSize: 14, color: colors.textSecondary, marginTop: 8 }}
-          >
-            {r.riskScore > 70
-              ? "High risk \u2014 consult your doctor"
-              : r.riskScore > 30
-                ? "Moderate risk \u2014 monitor closely"
-                : "Low risk \u2014 looking good!"}
-          </Text>
         </View>
       )}
+
+      {/* 2. AI Disclaimer + Language Toggle */}
+      <View
+        style={{
+          backgroundColor: colors.surface,
+          paddingHorizontal: 16,
+          paddingVertical: 12,
+        }}
+      >
+        {/* Language Toggle — top-level, controls entire page */}
+        {(r.summaryBn || diagnosisBn.length > 0) && (
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", marginBottom: 10 }}>
+            <TouchableOpacity
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                paddingHorizontal: 14,
+                paddingVertical: 8,
+                borderRadius: 10,
+                backgroundColor: language === "bn" ? colors.primary : colors.primaryLight,
+              }}
+              onPress={() => {
+                haptics.selection();
+                setLanguage(language === "en" ? "bn" : "en");
+              }}
+            >
+              <Globe size={16} color={language === "bn" ? "#fff" : colors.primary} />
+              <Text
+                style={{
+                  fontSize: 14,
+                  fontWeight: "700",
+                  color: language === "bn" ? "#fff" : colors.primary,
+                }}
+              >
+                {language === "en" ? "\u09AC\u09BE\u0982\u09B2\u09BE" : "English"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* AI Professional Disclaimer */}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "flex-start",
+            gap: 10,
+            backgroundColor: "#FEF3C7",
+            borderRadius: 10,
+            padding: 12,
+            borderWidth: 1,
+            borderColor: "#F59E0B",
+          }}
+        >
+          <ShieldAlert size={20} color="#D97706" style={{ marginTop: 2 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: "700", color: "#92400E", marginBottom: 4 }}>
+              AI-Assisted Analysis
+            </Text>
+            <Text style={{ fontSize: 12, color: "#92400E", lineHeight: 18 }}>
+              This report was analyzed by AI and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment decisions.
+            </Text>
+          </View>
+        </View>
+      </View>
 
       {/* 3. Diagnosis — ALWAYS shown */}
       <View
@@ -464,15 +513,14 @@ export default function ReportDetailScreen() {
                   : "Diagnosis"}
             </Text>
           </View>
-          <LanguageToggle />
         </View>
 
         {diagnosisStatus === "all_clear" && diagnosis.length === 0 ? (
           <Text
             style={{
-              fontSize: 14,
+              fontSize: 15,
               color: colors.success,
-              lineHeight: 20,
+              lineHeight: 22,
               marginTop: 4,
             }}
           >
@@ -489,10 +537,11 @@ export default function ReportDetailScreen() {
               <Text
                 key={i}
                 style={{
-                  fontSize: 14,
+                  fontSize: 15,
+                  fontWeight: diagnosisStatus === "serious" ? "700" : "500",
                   color: getDiagnosisColor(),
-                  marginBottom: 4,
-                  lineHeight: 20,
+                  marginBottom: 6,
+                  lineHeight: 22,
                 }}
               >
                 {"\u2022"} {item}
@@ -502,96 +551,392 @@ export default function ReportDetailScreen() {
         )}
       </View>
 
-      {/* 4. Lab Values — anomalies first */}
-      <View
-        style={{
-          backgroundColor: colors.surface,
-          margin: 16,
-          marginBottom: 0,
-          borderRadius: 14,
-          padding: 16,
-        }}
-      >
+      {/* 4. Type-specific data section */}
+      {reportType === "ECG" && ecgFindings.length > 0 ? (
+        /* ECG Parameters */
         <View
           style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 8,
-            marginBottom: 12,
+            backgroundColor: colors.surface,
+            margin: 16,
+            marginBottom: 0,
+            borderRadius: 14,
+            padding: 16,
           }}
         >
-          <Activity size={18} color={colors.primary} />
-          <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>
-            Lab Values ({values.length})
-          </Text>
-          {anomalyCount > 0 && (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 12,
+            }}
+          >
+            <HeartPulse size={18} color="#9333EA" />
+            <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>
+              ECG Parameters ({ecgFindings.length})
+            </Text>
+            {ecgAbnormalCount > 0 && (
+              <View
+                style={{
+                  backgroundColor: colors.dangerLight,
+                  paddingHorizontal: 8,
+                  paddingVertical: 2,
+                  borderRadius: 6,
+                }}
+              >
+                <Text
+                  style={{ fontSize: 11, fontWeight: "600", color: colors.danger }}
+                >
+                  {ecgAbnormalCount} abnormal
+                </Text>
+              </View>
+            )}
+          </View>
+          {ecgFindings.map((f, i) => {
+            const isAbnormal = f.status !== "normal";
+            const findingColor =
+              f.status === "critical"
+                ? colors.danger
+                : f.status === "abnormal"
+                  ? colors.warning
+                  : colors.success;
+            const findingBg =
+              f.status === "critical"
+                ? colors.dangerLight
+                : f.status === "abnormal"
+                  ? colors.warningLight
+                  : undefined;
+            return (
+              <View
+                key={i}
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  paddingVertical: 12,
+                  paddingHorizontal: isAbnormal ? 12 : 0,
+                  borderBottomWidth: i < ecgFindings.length - 1 ? 1 : 0,
+                  borderBottomColor: colors.borderLight,
+                  ...(isAbnormal && {
+                    backgroundColor: findingBg,
+                    marginHorizontal: -12,
+                    borderRadius: 8,
+                    marginBottom: 4,
+                  }),
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: isAbnormal ? "700" : "500",
+                      color: isAbnormal ? findingColor : colors.text,
+                    }}
+                  >
+                    {f.parameter}
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      color: colors.textTertiary,
+                      marginTop: 2,
+                    }}
+                  >
+                    Normal: {f.normalRange}
+                  </Text>
+                </View>
+                <View
+                  style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+                >
+                  <Text
+                    style={{ fontSize: 16, fontWeight: "700", color: findingColor }}
+                  >
+                    {f.value} {f.unit}
+                  </Text>
+                  {f.status === "normal" ? (
+                    <CheckCircle size={16} color={colors.success} />
+                  ) : (
+                    <AlertTriangle
+                      size={16}
+                      color={f.status === "critical" ? colors.danger : colors.warning}
+                    />
+                  )}
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      ) : reportType === "IMAGING" && imagingFindings.length > 0 ? (
+        /* Imaging Findings */
+        <View
+          style={{
+            backgroundColor: colors.surface,
+            margin: 16,
+            marginBottom: 0,
+            borderRadius: 14,
+            padding: 16,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 4,
+            }}
+          >
+            <ScanLine size={18} color="#0284C7" />
+            <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>
+              Findings ({imagingFindings.length})
+            </Text>
+            {r.imagingModality && (
+              <View
+                style={{
+                  backgroundColor: "#E0F2FE",
+                  paddingHorizontal: 8,
+                  paddingVertical: 2,
+                  borderRadius: 6,
+                }}
+              >
+                <Text
+                  style={{ fontSize: 11, fontWeight: "600", color: "#0284C7" }}
+                >
+                  {r.imagingModality}
+                </Text>
+              </View>
+            )}
+          </View>
+          {imagingFindings.map((f, i) => {
+            const isCriticalOrConcerning = f.significance === "critical" || f.significance === "concerning";
+            const sigColor =
+              f.significance === "critical"
+                ? colors.danger
+                : f.significance === "concerning"
+                  ? colors.warning
+                  : f.significance === "benign"
+                    ? colors.info
+                    : colors.success;
+            const sigBg =
+              f.significance === "critical"
+                ? colors.dangerLight
+                : f.significance === "concerning"
+                  ? colors.warningLight
+                  : f.significance === "benign"
+                    ? colors.primaryLight
+                    : colors.successLight;
+            return (
+              <View
+                key={i}
+                style={{
+                  paddingVertical: 12,
+                  borderBottomWidth: i < imagingFindings.length - 1 ? 1 : 0,
+                  borderBottomColor: colors.borderLight,
+                  ...(isCriticalOrConcerning && {
+                    backgroundColor: sigBg,
+                    marginHorizontal: -12,
+                    paddingHorizontal: 12,
+                    borderRadius: 8,
+                    marginBottom: 4,
+                  }),
+                }}
+              >
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 6,
+                  }}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}>
+                    <MapPin size={16} color={isCriticalOrConcerning ? sigColor : colors.textTertiary} />
+                    <Text
+                      style={{
+                        fontSize: 15,
+                        fontWeight: "700",
+                        color: isCriticalOrConcerning ? sigColor : colors.text,
+                      }}
+                    >
+                      {f.location}
+                    </Text>
+                  </View>
+                  <View
+                    style={{
+                      backgroundColor: isCriticalOrConcerning ? sigColor : sigBg,
+                      paddingHorizontal: 10,
+                      paddingVertical: 3,
+                      borderRadius: 6,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: "700",
+                        color: isCriticalOrConcerning ? "#fff" : sigColor,
+                      }}
+                    >
+                      {f.significance.toUpperCase()}
+                    </Text>
+                  </View>
+                </View>
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: isCriticalOrConcerning ? "600" : "400",
+                    color: isCriticalOrConcerning ? sigColor : colors.textSecondary,
+                    lineHeight: 22,
+                    marginLeft: 22,
+                  }}
+                >
+                  {f.description}
+                </Text>
+              </View>
+            );
+          })}
+
+          {/* Impression */}
+          {r.impression && (
             <View
               style={{
-                backgroundColor: colors.dangerLight,
-                paddingHorizontal: 8,
-                paddingVertical: 2,
-                borderRadius: 6,
+                backgroundColor: colors.surfaceSecondary,
+                borderRadius: 12,
+                padding: 16,
+                marginTop: 14,
               }}
             >
               <Text
-                style={{ fontSize: 11, fontWeight: "600", color: colors.danger }}
+                style={{
+                  fontSize: 15,
+                  fontWeight: "700",
+                  color: colors.text,
+                  marginBottom: 6,
+                }}
               >
-                {anomalyCount} abnormal
+                {language === "bn" ? "\u0987\u09AE\u09CD\u09AA\u09CD\u09B0\u09C7\u09B6\u09A8" : "Impression"}
+              </Text>
+              <Text
+                style={{
+                  fontSize: 15,
+                  color: colors.text,
+                  lineHeight: 24,
+                  fontWeight: "500",
+                }}
+              >
+                {language === "bn" && r.impressionBn ? r.impressionBn : r.impression}
               </Text>
             </View>
           )}
         </View>
-        {sortedValues.map((v, i) => {
-          const valueColor =
-            v.status === "critical"
-              ? colors.danger
-              : v.status === "high"
-                ? colors.warning
-                : v.status === "low"
-                  ? colors.info
-                  : colors.success;
-          return (
-            <View
-              key={i}
-              style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "center",
-                paddingVertical: 10,
-                borderBottomWidth: i < sortedValues.length - 1 ? 1 : 0,
-                borderBottomColor: colors.borderLight,
-              }}
-            >
-              <View style={{ flex: 1 }}>
-                <Text
-                  style={{ fontSize: 14, fontWeight: "500", color: colors.text }}
-                >
-                  {v.test}
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 11,
-                    color: colors.textTertiary,
-                    marginTop: 2,
-                  }}
-                >
-                  Ref: {v.referenceRange}
-                </Text>
-              </View>
+      ) : (
+        /* Lab Values (default) — anomalies first */
+        <View
+          style={{
+            backgroundColor: colors.surface,
+            margin: 16,
+            marginBottom: 0,
+            borderRadius: 14,
+            padding: 16,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 12,
+            }}
+          >
+            <Activity size={18} color={colors.primary} />
+            <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>
+              Lab Values ({values.length})
+            </Text>
+            {anomalyCount > 0 && (
               <View
-                style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+                style={{
+                  backgroundColor: colors.dangerLight,
+                  paddingHorizontal: 8,
+                  paddingVertical: 2,
+                  borderRadius: 6,
+                }}
               >
                 <Text
-                  style={{ fontSize: 15, fontWeight: "700", color: valueColor }}
+                  style={{ fontSize: 11, fontWeight: "600", color: colors.danger }}
                 >
-                  {v.value} {v.unit}
+                  {anomalyCount} abnormal
                 </Text>
-                <StatusIcon status={v.status} colors={colors} />
               </View>
-            </View>
-          );
-        })}
-      </View>
+            )}
+          </View>
+          {sortedValues.map((v, i) => {
+            const isAbnormal = v.status !== "normal";
+            const valueColor =
+              v.status === "critical"
+                ? colors.danger
+                : v.status === "high"
+                  ? colors.warning
+                  : v.status === "low"
+                    ? colors.info
+                    : colors.success;
+            const valueBg =
+              v.status === "critical"
+                ? colors.dangerLight
+                : v.status === "high"
+                  ? colors.warningLight
+                  : undefined;
+            return (
+              <View
+                key={i}
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  paddingVertical: 12,
+                  paddingHorizontal: isAbnormal ? 12 : 0,
+                  borderBottomWidth: i < sortedValues.length - 1 ? 1 : 0,
+                  borderBottomColor: colors.borderLight,
+                  ...(isAbnormal && valueBg && {
+                    backgroundColor: valueBg,
+                    marginHorizontal: -12,
+                    borderRadius: 8,
+                    marginBottom: 4,
+                  }),
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: isAbnormal ? "700" : "500",
+                      color: isAbnormal ? valueColor : colors.text,
+                    }}
+                  >
+                    {v.test}
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      color: colors.textTertiary,
+                      marginTop: 2,
+                    }}
+                  >
+                    Ref: {v.referenceRange}
+                  </Text>
+                </View>
+                <View
+                  style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+                >
+                  <Text
+                    style={{ fontSize: 15, fontWeight: "700", color: valueColor }}
+                  >
+                    {v.value} {v.unit}
+                  </Text>
+                  <StatusIcon status={v.status} colors={colors} />
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       {/* 5. AI Interpretation */}
       <View
@@ -614,14 +959,13 @@ export default function ReportDetailScreen() {
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Stethoscope size={18} color={colors.primary} />
             <Text
-              style={{ fontSize: 16, fontWeight: "600", color: colors.text }}
+              style={{ fontSize: 17, fontWeight: "700", color: colors.text }}
             >
               AI Interpretation
             </Text>
           </View>
-          <LanguageToggle />
         </View>
-        <Text style={{ fontSize: 15, color: colors.textSecondary, lineHeight: 24 }}>
+        <Text style={{ fontSize: 16, color: colors.textSecondary, lineHeight: 26 }}>
           {language === "bn" && r.summaryBn ? r.summaryBn : r.summary}
         </Text>
       </View>
@@ -819,18 +1163,18 @@ function RecGroup({
   textColor: string;
 }) {
   return (
-    <View style={{ borderRadius: 10, padding: 12, marginBottom: 8, backgroundColor: bg }}>
-      <Text style={{ fontSize: 13, fontWeight: "700", marginBottom: 6, color }}>
+    <View style={{ borderRadius: 10, padding: 14, marginBottom: 8, backgroundColor: bg }}>
+      <Text style={{ fontSize: 14, fontWeight: "700", marginBottom: 8, color }}>
         {title}
       </Text>
       {items.map((item: string, i: number) => (
         <Text
           key={i}
           style={{
-            fontSize: 13,
+            fontSize: 14,
             color: textColor,
-            marginBottom: 3,
-            lineHeight: 20,
+            marginBottom: 4,
+            lineHeight: 22,
           }}
         >
           {"\u2022"} {item}

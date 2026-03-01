@@ -15,6 +15,9 @@ import {
   Clock,
   XCircle,
   RotateCcw,
+  HeartPulse,
+  ScanLine,
+  FlaskConical,
 } from "lucide-react-native";
 import { labReportsService } from "../../src/services/lab-reports.service";
 import { ReportsListSkeleton } from "../../src/components/common/ReportsListSkeleton";
@@ -76,9 +79,17 @@ export default function ReportsScreen() {
     return map[status] || map.PENDING;
   };
 
+  const getTypeIcon = (reportType?: string) => {
+    if (reportType === "ECG") return { icon: HeartPulse, color: "#9333EA", bg: "#F3E8FF" };
+    if (reportType === "IMAGING") return { icon: ScanLine, color: "#0284C7", bg: "#E0F2FE" };
+    return { icon: FlaskConical, color: colors.primary, bg: colors.primaryLight };
+  };
+
   const renderReport = ({ item }: { item: any }) => {
     const status = getStatusConfig(item.status);
     const StatusIcon = status.icon;
+    const typeConfig = getTypeIcon(item.reportType);
+    const TypeIcon = typeConfig.icon;
 
     return (
       <TouchableOpacity
@@ -101,13 +112,13 @@ export default function ReportsScreen() {
             width: 44,
             height: 44,
             borderRadius: 12,
-            backgroundColor: colors.primaryLight,
+            backgroundColor: typeConfig.bg,
             alignItems: "center",
             justifyContent: "center",
             marginRight: 12,
           }}
         >
-          <FileText size={24} color={colors.primary} />
+          <TypeIcon size={24} color={typeConfig.color} />
         </View>
         <View style={{ flex: 1 }}>
           <Text

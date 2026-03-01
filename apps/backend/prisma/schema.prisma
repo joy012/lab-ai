@@ -31,6 +31,11 @@ model LabReport {
   userId          String    @db.ObjectId
   doctorId        String?   @db.ObjectId
   title           String?
+  reportType      String    @default("LAB_REPORT") // "LAB_REPORT" | "ECG" | "IMAGING"
+  // Per-report patient context (for doctors uploading different patient reports)
+  patientAge      Int?
+  patientGender   String?   // "Male" | "Female" | "Other"
+  clinicalHistory String?   // Chief complaint, symptoms, relevant history
   imageUrl        String
   imageUrls       String[]
   rawText         String?
@@ -42,6 +47,13 @@ model LabReport {
   diagnosisStatus String?   // "all_clear" | "mild" | "moderate" | "serious"
   riskScore       Int?
   recommendations Json?
+  // ECG-specific fields
+  ecgFindings     Json?     // ECGFinding[] — heart rate, rhythm, intervals, axis
+  // Imaging-specific fields
+  imagingModality String?   // "MRI" | "CT" | "X-RAY" | "USG"
+  imagingFindings Json?     // ImagingFinding[] — location, description, significance
+  impression      String?   // Overall radiologist impression
+  impressionBn    String?   // Bengali impression
   status          String    @default("PENDING") // PENDING | PROCESSING | COMPLETED | FAILED
   errorMessage    String?
   labName         String?
