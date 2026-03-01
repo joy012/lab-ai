@@ -364,7 +364,7 @@ Use Bangladesh reference ranges where applicable.`;
     },
     model: AIModel = 'gemini-flash',
     knowledgeContext?: string,
-    personaModifier?: string,
+    _personaModifier?: string,
     userRole?: string,
   ): Promise<InterpretationResult> {
     const profileContext = healthProfile
@@ -375,17 +375,26 @@ Use Bangladesh reference ranges where applicable.`;
       ? `\nRelevant Medical Knowledge (use this for more accurate interpretation):\n${knowledgeContext}\n`
       : '';
 
-    const personaSection = personaModifier
-      ? `\nInterpretation Style: ${personaModifier}\n`
-      : '';
-
     const roleInstruction =
       userRole === 'DOCTOR'
-        ? `\nRole: You are a junior doctor assistant helping a senior physician analyze lab reports. Use proper medical terminology and clinical language. Include pathophysiology context, differential diagnosis considerations, and reference clinical guidelines (e.g., WHO, NICE, BMDC). Provide actionable clinical suggestions. Be precise, structured, and thorough — like writing a clinical note.\n`
-        : `\nRole: You are a friendly health assistant explaining lab results to a patient with no medical background. Use simple, everyday language. Avoid medical jargon — if you must use a medical term, explain it in parentheses. Be reassuring but honest. Focus on what the patient can do (diet, lifestyle) rather than technical details.\n`;
+        ? `\nRole: You are a junior doctor assistant helping a senior physician analyze lab reports.
+IMPORTANT — use proper medical terminology and clinical language throughout. Include:
+- Pathophysiology context for each abnormal finding
+- Differential diagnosis considerations
+- Reference clinical guidelines (e.g., WHO, NICE, BMDC) where applicable
+- Actionable clinical suggestions (specific tests, referrals, interventions)
+- Be precise, structured, and thorough — write like a clinical note
+- For each diagnosis, briefly explain the underlying mechanism\n`
+        : `\nRole: You are a friendly health assistant explaining lab results to a patient with no medical background.
+IMPORTANT — use simple, everyday language throughout. Follow these rules:
+- Avoid medical jargon entirely — if you must use a medical term, explain it in parentheses like (this means...)
+- Be reassuring but honest
+- Use relatable analogies to explain what values mean
+- Focus on what the patient can do (diet, lifestyle changes) rather than technical details
+- If something needs attention, explain it gently without causing panic\n`;
 
     const prompt = `You are a medical AI assistant specializing in lab report interpretation for Bangladesh patients.
-${roleInstruction}${personaSection}
+${roleInstruction}
 Lab Results:
 ${JSON.stringify(values, null, 2)}
 
@@ -399,7 +408,7 @@ Provide a comprehensive interpretation. Return ONLY valid JSON in this exact for
   "summary": "2-3 paragraph summary in English explaining what the results mean",
   "summaryBn": "Same summary in Bengali (বাংলা)",
   "keyFindings": ["Finding 1", "Finding 2"],
-  "riskScore": 25,
+  "riskScore": 0,
   "recommendations": {
     "diet": ["Dietary recommendation 1"],
     "lifestyle": ["Lifestyle recommendation 1"],
@@ -408,21 +417,27 @@ Provide a comprehensive interpretation. Return ONLY valid JSON in this exact for
   "criticalValues": ["Critical value description if any, empty array if none"]
 }
 
-DIAGNOSIS RULES:
-- diagnosis: List specific medical conditions/diseases identified from the lab values.
-- If ALL values are normal, return empty arrays for diagnosis/diagnosisBn.
-- diagnosisStatus: "all_clear" (everything normal), "mild" (minor issues like slight deficiencies), "moderate" (needs medical attention), "serious" (needs immediate medical consultation).
-- diagnosisBn: Same diagnoses translated to Bengali.
+CRITICAL RULES — follow exactly for consistent results:
 
-RISK SCORE RULES (follow strictly for consistency):
-- Start at 0
-- Each CRITICAL value: +20 points
-- Each HIGH value: +8 points
-- Each LOW value: +5 points
-- Each NORMAL value: +0 points
-- Cap at 100. Round to nearest integer.
+1. DIAGNOSIS — be specific and consistent:
+   - List specific medical conditions identified from the lab values (e.g., "Iron deficiency anemia", NOT "Anemia").
+   - If ALL values are "normal", return EMPTY arrays for diagnosis/diagnosisBn and set diagnosisStatus to "all_clear".
+   - The SAME set of lab values must ALWAYS produce the SAME diagnosis list. Do not vary your answer.
+   - diagnosisBn: Same diagnoses translated to Bengali.
 
-Use Bangladesh-specific reference ranges and dietary context (e.g., local foods).`;
+2. DIAGNOSIS STATUS (use the SAME logic every time):
+   - "all_clear" = every value is "normal"
+   - "mild" = only "low" values present (no "high" or "critical")
+   - "moderate" = any "high" values present (no "critical")
+   - "serious" = any "critical" values present
+
+3. RISK SCORE: Set to 0 (the server computes this separately).
+
+4. SUMMARY — be consistent:
+   - For the SAME lab values, write the SAME interpretation. Do not add random variations.
+   - Mention each abnormal value and what it means.
+
+Use Bangladesh-specific dietary context (e.g., local foods like dal, fish, leafy greens).`;
 
     const responseText = await this.callModel(prompt, model);
     return this.extractJson(responseText) as InterpretationResult;

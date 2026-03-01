@@ -5,7 +5,7 @@ import {
   TouchableOpacity,
   Alert,
 } from "react-native";
-import { LogOut, User, Shield, ChevronRight, Trash2 } from "lucide-react-native";
+import { LogOut, User, Shield, ChevronRight, Trash2, Stethoscope, Heart } from "lucide-react-native";
 import { useAuthStore } from "../../src/store/auth.store";
 import { authService } from "../../src/services/auth.service";
 import { AppHeader } from "../../src/components/common/AppHeader";
@@ -104,6 +104,64 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/* AI Mode — based on role */}
+        <View
+          style={{
+            backgroundColor: colors.surface,
+            padding: 16,
+            marginBottom: 16,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 12,
+            }}
+          >
+            {user?.role === "DOCTOR" ? (
+              <Stethoscope size={18} color={colors.primary} />
+            ) : (
+              <Heart size={18} color={colors.success} />
+            )}
+            <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>
+              AI Report Mode
+            </Text>
+          </View>
+          <View
+            style={{
+              backgroundColor:
+                user?.role === "DOCTOR" ? colors.primaryLight : colors.successLight,
+              borderRadius: 10,
+              padding: 14,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 14,
+                fontWeight: "600",
+                color: user?.role === "DOCTOR" ? colors.primary : colors.success,
+                marginBottom: 4,
+              }}
+            >
+              {user?.role === "DOCTOR" ? "Doctor Mode" : "Patient Mode"}
+            </Text>
+            <Text
+              style={{
+                fontSize: 13,
+                color: colors.textSecondary,
+                lineHeight: 19,
+              }}
+            >
+              {user?.role === "DOCTOR"
+                ? "Reports use medical terminology, clinical language, differential diagnosis, and reference guidelines."
+                : "Reports use simple, friendly language with easy-to-understand explanations and lifestyle advice."}
+            </Text>
+          </View>
+        </View>
+
+        {/* Account info */}
         <View
           style={{
             backgroundColor: colors.surface,

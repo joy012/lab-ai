@@ -20,14 +20,6 @@ import { haptics } from "../../src/utils/haptics";
 
 const MAX_FILES = 10;
 
-const AI_PERSONAS = [
-  { id: "", name: "Default", emoji: "🤖", description: "Standard balanced interpretation" },
-  { id: "builtin-simple", name: "Dr. Simple", emoji: "😊", description: "Explains like a friend" },
-  { id: "builtin-detail", name: "Dr. Detail", emoji: "🔬", description: "Comprehensive analysis" },
-  { id: "builtin-diet", name: "Diet Coach", emoji: "🥗", description: "Nutrition focused" },
-  { id: "builtin-guardian", name: "Health Guardian", emoji: "🛡️", description: "Emphasizes concerns" },
-];
-
 interface SelectedFile {
   uri: string;
   name: string;
@@ -40,7 +32,6 @@ export default function UploadScreen() {
   const { colors } = useTheme();
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const [title, setTitle] = useState("");
-  const [selectedPersona, setSelectedPersona] = useState("");
 
   const { mutate: uploadReport, isPending } =
     labReportsService.useUploadLabReport({
@@ -48,7 +39,6 @@ export default function UploadScreen() {
         toast.success("Upload Successful", "Your report is being analyzed by AI.");
         setFiles([]);
         setTitle("");
-        setSelectedPersona("");
         router.push(`/report/${data.id}`);
       },
       onError: (error: Error) => {
@@ -154,7 +144,6 @@ export default function UploadScreen() {
       } as any);
     });
     if (title) formData.append("title", title);
-    if (selectedPersona) formData.append("personaId", selectedPersona);
 
     uploadReport({ body: formData });
   };
@@ -350,71 +339,6 @@ export default function UploadScreen() {
           value={title}
           onChangeText={setTitle}
         />
-
-        {/* AI Persona picker */}
-        <Text
-          style={{
-            fontSize: 14,
-            fontWeight: "500",
-            color: colors.textSecondary,
-            marginBottom: 8,
-          }}
-        >
-          AI Interpretation Style
-        </Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={{ marginBottom: 20 }}
-          contentContainerStyle={{ gap: 8 }}
-        >
-          {AI_PERSONAS.map((p) => {
-            const isSelected = selectedPersona === p.id;
-            return (
-              <TouchableOpacity
-                key={p.id}
-                onPress={() => {
-                  haptics.selection();
-                  setSelectedPersona(p.id);
-                }}
-                style={{
-                  paddingHorizontal: 14,
-                  paddingVertical: 10,
-                  borderRadius: 12,
-                  backgroundColor: isSelected ? colors.primaryLight : colors.surface,
-                  borderWidth: 1.5,
-                  borderColor: isSelected ? colors.primary : colors.border,
-                  minWidth: 110,
-                }}
-              >
-                <Text style={{ fontSize: 18, textAlign: "center", marginBottom: 4 }}>
-                  {p.emoji}
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 13,
-                    fontWeight: "600",
-                    color: isSelected ? colors.primary : colors.text,
-                    textAlign: "center",
-                  }}
-                >
-                  {p.name}
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 11,
-                    color: colors.textTertiary,
-                    textAlign: "center",
-                    marginTop: 2,
-                  }}
-                  numberOfLines={1}
-                >
-                  {p.description}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
 
         {/* Upload button */}
         <TouchableOpacity

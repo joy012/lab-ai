@@ -5,14 +5,9 @@ import { UploadService } from '../upload/upload.service.js';
 import { EmailService } from '../email/email.service.js';
 import { RealtimeGateway } from '../realtime/realtime.gateway.js';
 import { KnowledgeService } from '../knowledge/knowledge.service.js';
-import {
-  AiPersonaService,
-  BUILT_IN_PERSONAS,
-} from '../ai-persona/ai-persona.service.js';
 import { QueryLabReportsDto } from './dto/query-lab-reports.dto.js';
 import type {
   LabValue,
-  AIModel,
   ExtractionResult,
 } from '../ai/ai.service.js';
 
@@ -27,15 +22,12 @@ export class LabReportsService {
     private readonly emailService: EmailService,
     private readonly realtimeGateway: RealtimeGateway,
     private readonly knowledgeService: KnowledgeService,
-    private readonly aiPersonaService: AiPersonaService,
   ) {}
 
   async create(
     userId: string,
     files: Express.Multer.File[],
     title?: string,
-    model?: AIModel,
-    personaId?: string,
   ) {
     const imageUrls: string[] = [];
     for (const file of files) {
@@ -61,8 +53,6 @@ export class LabReportsService {
       userId,
       imageUrls,
       files,
-      model,
-      personaId,
     ).catch((err) => {
       this.logger.error(
         `Failed to process report ${report.id}: ${err.message}`,
@@ -116,6 +106,37 @@ export class LabReportsService {
     });
   }
 
+  /**
+   * Compute risk score deterministically from lab values.
+   * CRITICAL: +20, HIGH: +8, LOW: +5, NORMAL: +0. Cap at 100.
+   */
+  private computeRiskScore(values: LabValue[]): number {
+    let score = 0;
+    for (const v of values) {
+      if (v.status === 'critical') score += 20;
+      else if (v.status === 'high') score += 8;
+      else if (v.status === 'low') score += 5;
+    }
+    return Math.min(score, 100);
+  }
+
+  /**
+   * Compute diagnosis status deterministically from lab values.
+   */
+  private computeDiagnosisStatus(
+    values: LabValue[],
+  ): 'all_clear' | 'mild' | 'moderate' | 'serious' {
+    const hasCritical = values.some((v) => v.status === 'critical');
+    const highCount = values.filter((v) => v.status === 'high').length;
+    const lowCount = values.filter((v) => v.status === 'low').length;
+    const abnormalCount = highCount + lowCount;
+
+    if (hasCritical) return 'serious';
+    if (highCount >= 3 || abnormalCount >= 5) return 'moderate';
+    if (abnormalCount > 0) return 'mild';
+    return 'all_clear';
+  }
+
   private isPdf(file: Express.Multer.File): boolean {
     return (
       file.mimetype === 'application/pdf' ||
@@ -128,8 +149,6 @@ export class LabReportsService {
     userId: string,
     imageUrls: string[],
     originalFiles: Express.Multer.File[],
-    model?: AIModel,
-    personaId?: string,
   ) {
     try {
       await this.prisma.labReport.update({
@@ -159,21 +178,16 @@ export class LabReportsService {
           message: `Extracting values from file ${i + 1} of ${totalFiles}...`,
         });
 
-        let extraction: ExtractionResult;
         const file = originalFiles[i];
         const url = imageUrls[i];
-
-        if (file && this.isPdf(file)) {
-          extraction = await this.aiService.extractLabValuesFromPdf(
-            file.buffer,
-          );
-        } else if (url.startsWith('http')) {
-          extraction = await this.aiService.extractLabValuesFromUrl(url);
-        } else {
-          extraction = await this.aiService.extractLabValues(
-            this.uploadService.getFilePath(url),
-          );
-        }
+        const extraction =
+          file && this.isPdf(file)
+            ? await this.aiService.extractLabValuesFromPdf(file.buffer)
+            : url.startsWith('http')
+              ? await this.aiService.extractLabValuesFromUrl(url)
+              : await this.aiService.extractLabValues(
+                  this.uploadService.getFilePath(url),
+                );
 
         allValues.push(...extraction.values);
         rawText += (rawText ? '\n---\n' : '') + extraction.rawText;
@@ -185,33 +199,15 @@ export class LabReportsService {
       // Normalize status values to lowercase + validate
       const normalizedValues = this.normalizeLabValues(allValues);
 
+      // Compute risk score & diagnosis status server-side (deterministic)
+      const riskScore = this.computeRiskScore(normalizedValues);
+      const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
+
       this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
         reportId,
         progress: 55,
         message: 'Analyzing results...',
       });
-
-      // Resolve persona modifier if a persona was selected
-      let personaModifier: string | undefined;
-      if (personaId) {
-        const builtIn = BUILT_IN_PERSONAS.find((p) => p.id === personaId);
-        if (builtIn) {
-          personaModifier = this.aiPersonaService.getPromptModifier(
-            builtIn.style,
-            builtIn.preferences,
-          );
-        } else {
-          const customPersona = await this.prisma.aiPersona.findFirst({
-            where: { id: personaId, userId },
-          });
-          if (customPersona) {
-            personaModifier = this.aiPersonaService.getPromptModifier(
-              customPersona.style,
-              customPersona.preferences as any,
-            );
-          }
-        }
-      }
 
       const [healthProfile, knowledgeContext, user] = await Promise.all([
         this.prisma.healthProfile.findUnique({ where: { userId } }),
@@ -227,15 +223,15 @@ export class LabReportsService {
         message: 'Generating recommendations...',
       });
 
-      // Try primary model, fallback to Groq if Gemini fails
+      // AI generates diagnosis text, summary, recommendations — role-based automatically
       let interpretation;
       try {
         interpretation = await this.aiService.interpretResults(
           normalizedValues,
           healthProfile || undefined,
-          model,
+          'gemini-flash',
           knowledgeContext,
-          personaModifier,
+          undefined,
           user?.role,
         );
       } catch (primaryErr: any) {
@@ -247,7 +243,7 @@ export class LabReportsService {
           healthProfile || undefined,
           'llama-3.3',
           knowledgeContext,
-          personaModifier,
+          undefined,
           user?.role,
         );
       }
@@ -267,8 +263,8 @@ export class LabReportsService {
           summaryBn: interpretation.summaryBn,
           diagnosis: interpretation.diagnosis || [],
           diagnosisBn: interpretation.diagnosisBn || [],
-          diagnosisStatus: interpretation.diagnosisStatus || 'all_clear',
-          riskScore: interpretation.riskScore,
+          diagnosisStatus,
+          riskScore,
           recommendations: interpretation.recommendations as any,
           labName,
           reportDate: reportDate ? new Date(reportDate) : null,
@@ -310,12 +306,7 @@ export class LabReportsService {
     }
   }
 
-  async rerun(
-    userId: string,
-    reportId: string,
-    model?: AIModel,
-    personaId?: string,
-  ) {
+  async rerun(userId: string, reportId: string) {
     const report = await this.findOne(userId, reportId);
 
     const hasExistingValues =
@@ -346,11 +337,6 @@ export class LabReportsService {
         reportId,
         userId,
         report.values as unknown as LabValue[],
-        report.rawText || '',
-        report.labName || undefined,
-        report.reportDate?.toISOString() || undefined,
-        model,
-        personaId,
       ).catch((err) => {
         this.logger.error(
           `Failed to reinterpret report ${reportId}: ${err.message}`,
@@ -358,7 +344,7 @@ export class LabReportsService {
       });
     } else {
       // Full re-extraction + interpretation (no existing values)
-      this.reprocessReport(reportId, userId, report.imageUrls, model, personaId).catch(
+      this.reprocessReport(reportId, userId, report.imageUrls).catch(
         (err) => {
           this.logger.error(
             `Failed to reprocess report ${reportId}: ${err.message}`,
@@ -371,17 +357,12 @@ export class LabReportsService {
   }
 
   /**
-   * Re-interpret only — reuses existing extracted values to produce consistent scores.
+   * Re-interpret only — reuses existing extracted values for consistent results.
    */
   private async reinterpretReport(
     reportId: string,
     userId: string,
     existingValues: LabValue[],
-    rawText: string,
-    labName?: string,
-    reportDate?: string,
-    model?: AIModel,
-    personaId?: string,
   ) {
     try {
       await this.prisma.labReport.update({
@@ -395,29 +376,9 @@ export class LabReportsService {
         message: 'Re-analyzing with same values...',
       });
 
-      // Normalize status values before re-interpretation
       const normalizedValues = this.normalizeLabValues(existingValues);
-
-      let personaModifier: string | undefined;
-      if (personaId) {
-        const builtIn = BUILT_IN_PERSONAS.find((p) => p.id === personaId);
-        if (builtIn) {
-          personaModifier = this.aiPersonaService.getPromptModifier(
-            builtIn.style,
-            builtIn.preferences,
-          );
-        } else {
-          const customPersona = await this.prisma.aiPersona.findFirst({
-            where: { id: personaId, userId },
-          });
-          if (customPersona) {
-            personaModifier = this.aiPersonaService.getPromptModifier(
-              customPersona.style,
-              customPersona.preferences as any,
-            );
-          }
-        }
-      }
+      const riskScore = this.computeRiskScore(normalizedValues);
+      const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
 
       const [healthProfile, knowledgeContext, user] = await Promise.all([
         this.prisma.healthProfile.findUnique({ where: { userId } }),
@@ -441,9 +402,9 @@ export class LabReportsService {
         interpretation = await this.aiService.interpretResults(
           normalizedValues,
           healthProfile || undefined,
-          model,
+          'gemini-flash',
           knowledgeContext,
-          personaModifier,
+          undefined,
           user?.role,
         );
       } catch (primaryErr: any) {
@@ -455,7 +416,7 @@ export class LabReportsService {
           healthProfile || undefined,
           'llama-3.3',
           knowledgeContext,
-          personaModifier,
+          undefined,
           user?.role,
         );
       }
@@ -474,8 +435,8 @@ export class LabReportsService {
           summaryBn: interpretation.summaryBn,
           diagnosis: interpretation.diagnosis || [],
           diagnosisBn: interpretation.diagnosisBn || [],
-          diagnosisStatus: interpretation.diagnosisStatus || 'all_clear',
-          riskScore: interpretation.riskScore,
+          diagnosisStatus,
+          riskScore,
           recommendations: interpretation.recommendations as any,
           status: 'COMPLETED',
         },
@@ -507,8 +468,6 @@ export class LabReportsService {
     reportId: string,
     userId: string,
     imageUrls: string[],
-    model?: AIModel,
-    personaId?: string,
   ) {
     try {
       await this.prisma.labReport.update({
@@ -522,7 +481,6 @@ export class LabReportsService {
         message: 'Re-analyzing your report...',
       });
 
-      // Re-extract from stored URLs (no original file buffers available)
       const allValues: LabValue[] = [];
       let rawText = '';
       let labName: string | undefined;
@@ -539,15 +497,11 @@ export class LabReportsService {
         });
 
         const url = imageUrls[i];
-        let extraction: ExtractionResult;
-
-        if (url.startsWith('http')) {
-          extraction = await this.aiService.extractLabValuesFromUrl(url);
-        } else {
-          extraction = await this.aiService.extractLabValues(
-            this.uploadService.getFilePath(url),
-          );
-        }
+        const extraction = url.startsWith('http')
+          ? await this.aiService.extractLabValuesFromUrl(url)
+          : await this.aiService.extractLabValues(
+              this.uploadService.getFilePath(url),
+            );
 
         allValues.push(...extraction.values);
         rawText += (rawText ? '\n---\n' : '') + extraction.rawText;
@@ -556,35 +510,15 @@ export class LabReportsService {
         if (extraction.patientName) patientName = extraction.patientName;
       }
 
-      // Normalize status values to lowercase + validate
       const normalizedValues = this.normalizeLabValues(allValues);
+      const riskScore = this.computeRiskScore(normalizedValues);
+      const diagnosisStatus = this.computeDiagnosisStatus(normalizedValues);
 
       this.realtimeGateway.emitToUser(userId, 'lab-report:processing', {
         reportId,
         progress: 55,
         message: 'Analyzing results...',
       });
-
-      let personaModifier: string | undefined;
-      if (personaId) {
-        const builtIn = BUILT_IN_PERSONAS.find((p) => p.id === personaId);
-        if (builtIn) {
-          personaModifier = this.aiPersonaService.getPromptModifier(
-            builtIn.style,
-            builtIn.preferences,
-          );
-        } else {
-          const customPersona = await this.prisma.aiPersona.findFirst({
-            where: { id: personaId, userId },
-          });
-          if (customPersona) {
-            personaModifier = this.aiPersonaService.getPromptModifier(
-              customPersona.style,
-              customPersona.preferences as any,
-            );
-          }
-        }
-      }
 
       const [healthProfile, knowledgeContext, user] = await Promise.all([
         this.prisma.healthProfile.findUnique({ where: { userId } }),
@@ -605,9 +539,9 @@ export class LabReportsService {
         interpretation = await this.aiService.interpretResults(
           normalizedValues,
           healthProfile || undefined,
-          model,
+          'gemini-flash',
           knowledgeContext,
-          personaModifier,
+          undefined,
           user?.role,
         );
       } catch (primaryErr: any) {
@@ -619,7 +553,7 @@ export class LabReportsService {
           healthProfile || undefined,
           'llama-3.3',
           knowledgeContext,
-          personaModifier,
+          undefined,
           user?.role,
         );
       }
@@ -639,8 +573,8 @@ export class LabReportsService {
           summaryBn: interpretation.summaryBn,
           diagnosis: interpretation.diagnosis || [],
           diagnosisBn: interpretation.diagnosisBn || [],
-          diagnosisStatus: interpretation.diagnosisStatus || 'all_clear',
-          riskScore: interpretation.riskScore,
+          diagnosisStatus,
+          riskScore,
           recommendations: interpretation.recommendations as any,
           labName,
           reportDate: reportDate ? new Date(reportDate) : null,

@@ -22,9 +22,6 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { LabReportsService } from './lab-reports.service.js';
 import { QueryLabReportsDto } from './dto/query-lab-reports.dto.js';
-import { AiService } from '../ai/ai.service.js';
-import type { AIModel } from '../ai/ai.service.js';
-
 @ApiTags('Lab Reports')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -32,14 +29,7 @@ import type { AIModel } from '../ai/ai.service.js';
 export class LabReportsController {
   constructor(
     private readonly labReportsService: LabReportsService,
-    private readonly aiService: AiService,
   ) {}
-
-  @Get('models')
-  @ApiOperation({ summary: 'Get available AI models for interpretation' })
-  getModels() {
-    return this.aiService.getAvailableModels();
-  }
 
   @Post('upload')
   @UseInterceptors(FilesInterceptor('files', 10))
@@ -49,13 +39,11 @@ export class LabReportsController {
     @CurrentUser('id') userId: string,
     @UploadedFiles() files: Express.Multer.File[],
     @Body('title') title?: string,
-    @Body('model') model?: AIModel,
-    @Body('personaId') personaId?: string,
   ) {
     if (!files || files.length === 0) {
       throw new BadRequestException('At least one file is required');
     }
-    return this.labReportsService.create(userId, files, title, model, personaId);
+    return this.labReportsService.create(userId, files, title);
   }
 
   @Get()
@@ -91,10 +79,8 @@ export class LabReportsController {
   rerun(
     @CurrentUser('id') userId: string,
     @Param('id') reportId: string,
-    @Body('model') model?: AIModel,
-    @Body('personaId') personaId?: string,
   ) {
-    return this.labReportsService.rerun(userId, reportId, model, personaId);
+    return this.labReportsService.rerun(userId, reportId);
   }
 
   @Get(':id')

@@ -1,135 +1,115 @@
-# Turborepo starter
+# LabAI - AI-Powered Lab Report Interpreter
 
-This Turborepo starter is maintained by the Turborepo core team.
+LabAI is a mobile-first application that uses AI to extract, interpret, and explain medical lab reports. Designed for both patients and doctors in Bangladesh, it turns complex lab reports into understandable health insights.
 
-## Using this example
+## What It Does
 
-Run the following command:
+1. **Upload lab reports** - Take a photo, pick from gallery, or upload PDFs of lab reports
+2. **AI extracts values** - Gemini Vision OCR reads every test value, reference range, and lab name
+3. **Smart interpretation** - AI analyzes results and provides diagnosis, risk assessment, and recommendations
+4. **Role-based reports** - Doctors get clinical terminology with differential diagnosis; patients get friendly, simple explanations
+5. **Bangla support** - Diagnosis and summary available in both English and Bengali
 
-```sh
-npx create-turbo@latest
-```
+## Key Features
 
-## What's inside?
+- **Deterministic risk scoring** - Risk scores and diagnosis severity are computed server-side, not by AI, so they're consistent every time
+- **Multi-file upload** - Upload up to 10 images/PDFs per report
+- **Image lightbox** - Tap report images for fullscreen view with pinch-to-zoom
+- **Real-time processing** - Socket.io progress updates during AI analysis
+- **PDF export** - Download analyzed reports as PDF
+- **Report comparison** - Compare two reports side-by-side
+- **Health trends** - Track test values across multiple reports over time
+- **Email notifications** - Get notified when analysis is complete or critical values are found
+- **Dark mode** - Full theme support
 
-This Turborepo includes the following packages/apps:
+## Tech Stack
 
-### Apps and Packages
+### Apps
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+| App | Tech | Description |
+|-----|------|-------------|
+| `apps/mobile` | Expo (React Native) | iOS/Android mobile app |
+| `apps/backend` | NestJS | REST API + WebSocket server |
+| `apps/web` | Next.js | Web dashboard (WIP) |
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+### Shared Libraries
 
-### Utilities
+| Package | Description |
+|---------|-------------|
+| `libs/api-client` | Type-safe API client with React Query hooks |
+| `libs/email-templates` | React Email templates |
 
-This Turborepo has some additional tools already setup for you:
+### AI & Infrastructure
 
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
+- **Gemini 2.5 Flash/Pro** - Lab report OCR + interpretation (with automatic fallback)
+- **Groq (Llama 3.3)** - Fallback for text-only interpretation
+- **MongoDB** - Database (via Prisma)
+- **Cloudinary** - Image/PDF storage
+- **Socket.io** - Real-time processing updates
 
-### Build
-
-To build all apps and packages, run the following command:
-
-```
-cd my-turborepo
-
-# With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended)
-turbo build
-
-# Without [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation), use your package manager
-npx turbo build
-yarn dlx turbo build
-pnpm exec turbo build
-```
-
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-```
-# With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended)
-turbo build --filter=docs
-
-# Without [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation), use your package manager
-npx turbo build --filter=docs
-yarn exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-```
-
-### Develop
-
-To develop all apps and packages, run the following command:
+## Project Structure
 
 ```
-cd my-turborepo
-
-# With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended)
-turbo dev
-
-# Without [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation), use your package manager
-npx turbo dev
-yarn exec turbo dev
-pnpm exec turbo dev
+lab-report-app/
+  apps/
+    mobile/          # Expo React Native app
+    backend/         # NestJS API server
+    web/             # Next.js web app
+  libs/
+    api-client/      # Shared API client + types
+    email-templates/ # Email templates
+  packages/
+    eslint-config/   # Shared ESLint config
+    typescript-config/ # Shared TypeScript config
 ```
 
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+## Getting Started
 
-```
-# With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended)
-turbo dev --filter=web
+### Prerequisites
 
-# Without [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation), use your package manager
-npx turbo dev --filter=web
-yarn exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-```
+- Node.js 18+
+- pnpm
+- MongoDB (local or Atlas)
 
-### Remote Caching
+### Setup
 
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
+```bash
+# Install dependencies
+pnpm install
 
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
+# Copy env template and fill in your keys
+cp apps/backend/env.yaml.example apps/backend/env.yaml
 
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
+# Push database schema
+cd apps/backend && npx prisma db push
 
-```
-cd my-turborepo
-
-# With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended)
-turbo login
-
-# Without [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation), use your package manager
-npx turbo login
-yarn exec turbo login
-pnpm exec turbo login
+# Start development
+pnpm dev
 ```
 
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
+### Environment Variables
 
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
+See `apps/backend/env.yaml.example` for all required variables:
+- **GEMINI_API_KEY** - Get free at [aistudio.google.com](https://aistudio.google.com/apikey)
+- **GROQ_API_KEY** - Get free at [console.groq.com](https://console.groq.com)
+- **CLOUDINARY** - Get free at [cloudinary.com](https://cloudinary.com)
+- **MongoDB** - Local or [MongoDB Atlas](https://cloud.mongodb.com) free tier
+
+## Architecture
 
 ```
-# With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended)
-turbo link
-
-# Without [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation), use your package manager
-npx turbo link
-yarn exec turbo link
-pnpm exec turbo link
+Mobile App  -->  NestJS API  -->  Gemini AI (OCR + Interpretation)
+    |                |                    |
+    |           MongoDB              Groq (fallback)
+    |                |
+    +-- Socket.io ---+  (real-time progress)
 ```
 
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+**Processing flow:**
+1. User uploads images/PDFs
+2. Backend saves to Cloudinary, creates report record
+3. Gemini Vision extracts all lab values via OCR
+4. Server normalizes values (lowercase status, validate ranges)
+5. Server computes risk score + diagnosis severity (deterministic)
+6. AI generates diagnosis text, summary, recommendations (role-based)
+7. Results saved to MongoDB, user notified via Socket.io + email
